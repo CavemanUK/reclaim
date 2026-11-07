@@ -66,9 +66,6 @@ struct DuplicatesView: View {
                     Text("10 MB").tag(Int64(10 << 20))
                 }
                 .fixedSize()
-                // Folders and the size are remembered between launches; this puts them back to the usual ones.
-                Button("Reset to defaults") { model.resetSettings() }
-                    .buttonStyle(.link).help("Forget the saved folders and size")
                 Spacer()
                 if model.dupState == .working {
                     Button("Stop") { model.cancelDuplicates() }
@@ -104,13 +101,15 @@ struct DuplicatesView: View {
                     StatTile(value: "\(model.dupGroups.reduce(0) { $0 + $1.files.count - 1 })", label: "extra copies", color: .orange)
                 }
                 HStack {
-                    Text("Click any picture, or Compare, to look at the copies side by side.")
+                    Text("Click any picture to look at the copies side by side.")
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Button { model.selectDuplicateExtras() } label: { Label("Remove all extras", systemImage: "trash") }
+                    if !model.dupSelection.isEmpty {
+                        Button("Keep everything") { model.dupSelection = [] }
+                    }
+                    Button { model.reviewDuplicateExtras() } label: { Label("Remove all extras…", systemImage: "trash") }
                         .buttonStyle(.borderedProminent).tint(.red)
-                        .help("Marks every copy for removal except the one Reclaim suggests keeping")
-                    Button("Keep everything") { model.dupSelection = [] }.disabled(model.dupSelection.isEmpty)
+                        .help("Lists every copy except the one Reclaim suggests keeping, for you to approve")
                 }
                 ForEach(model.dupGroups) { GroupCard(group: $0) }
             }
@@ -125,11 +124,7 @@ struct DuplicatesView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            Button("Review and move to Trash…") {
-                let items = model.dupGroups.flatMap(\.files)
-                    .filter { model.dupSelection.contains($0.path) }.map { ($0.path, $0.size) }
-                model.requestTrash(items, reason: "Duplicate files")
-            }
+            Button("Review and move to Trash…") { model.requestDuplicateRemoval() }
             .buttonStyle(.borderedProminent).controlSize(.large)
         }
         .padding(.horizontal, 22).padding(.vertical, 14)
@@ -241,8 +236,6 @@ private struct GroupCard: View {
                     .font(.callout.weight(.semibold)).foregroundStyle(.green)
                     .padding(.horizontal, 10).padding(.vertical, 4)
                     .background(Color.green.opacity(0.15), in: Capsule())
-                Button { model.dupCompare = group } label: { Label("Compare", systemImage: "rectangle.split.2x1") }
-                    .buttonStyle(.borderedProminent)
             }
             Divider()
             ForEach(group.files) { file in
@@ -355,7 +348,6 @@ private struct CompareSheet: View {
                 } else {
                     Label("Protected", systemImage: "lock").font(.caption).foregroundStyle(.secondary)
                 }
-                Button("Show in Finder") { model.reveal(file.path) }
                 Button("Open") { NSWorkspace.shared.open(URL(fileURLWithPath: file.path)) }
             }
             .controlSize(.small)

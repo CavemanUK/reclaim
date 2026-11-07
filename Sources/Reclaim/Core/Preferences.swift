@@ -38,8 +38,6 @@ enum Preferences {
         static let photoSource = "settings.photoSource"
         static let photoFolders = "settings.photoFolders"
         static let photoStrictness = "settings.photoStrictness"
-        /// Every key above, so `reset` removes exactly Reclaim's own settings and nothing else.
-        static let all = [dupFolders, dupMinSize, photoSource, photoFolders, photoStrictness]
     }
 
     /// The minimum sizes the picker offers. A saved value that isn't one of them is ignored, so a hand-edited or
@@ -81,10 +79,5 @@ enum Preferences {
         defaults.set(settings.photoSource, forKey: Key.photoSource)
         defaults.set(settings.photoFolders.map(\.path), forKey: Key.photoFolders)
         defaults.set(settings.photoStrictness.rawValue, forKey: Key.photoStrictness)
-    }
-
-    /// Forgets all saved choices, so the next `load` returns the defaults.
-    static func reset(in defaults: UserDefaults = .standard) {
-        Key.all.forEach { defaults.removeObject(forKey: $0) }
     }
 }

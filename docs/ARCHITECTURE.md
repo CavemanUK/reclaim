@@ -69,7 +69,7 @@ All file changes happen in **one place**, `ActionLog`, and every path through it
 - **Homebrew** commands go through `BrewCommand.parse`, an allow-list of three subcommands with a strict character check, and run as an argument array (never through a shell).
 - **Nothing runs `sudo`.** Commands that need it are shown as text to copy.
 
-**Preview.** `ActionLog.previewTrash` and `previewEvict` work out what a request would do without changing anything. They share `preflight` with the real `trash`, so a preview cannot approve what the real run would refuse; a test checks the refusals match word for word and that preview writes no history and moves no file. Homebrew previews use Homebrew's own `--dry-run` (`BrewCommand.previewArguments`; `uninstall` has none, so it gets no Preview button). If you add a new kind of change, give it a preview in the same way.
+**Preview (Homebrew only).** Homebrew commands are the one change Undo can't reverse, so `BrewCommand.previewArguments` gives `cleanup` and `autoremove` Homebrew's own `--dry-run` (`uninstall` has none, so it gets no Preview button). Everything else lists its exact items on the approval sheet and can be undone, so it has no separate preview; keep screens free of extra buttons.
 
 Every change is a `HistoryEntry` saved to `~/Library/Application Support/Reclaim/history.json` (and logged to the unified log, category `actions`). `ActionLog.reconcile()` brings the record in line with what the user did in Finder since.
 

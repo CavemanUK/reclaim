@@ -558,12 +558,6 @@ final class AppModel {
         loadingSettings = false
     }
 
-    /// Forgets the saved choices and goes back to the defaults (the usual personal folders, 1 MB, balanced).
-    func resetSettings() {
-        Preferences.reset()
-        applySettings(Settings.defaults())
-    }
-
     /// Lets the user pick a folder or drive to scan, remembers it, and makes it the current target.
     func chooseFolder() {
         let panel = NSOpenPanel()
@@ -953,14 +947,11 @@ final class AppModel {
         photoSelection = picked
     }
 
-    /// Marks every photo in one set except the suggested best.
-    func selectPhotoExtras(in group: SimilarGroup) {
-        for p in group.photos where p.path != group.suggestedKeep && canTrash(p.path) { photoSelection.insert(p.path) }
-    }
-
-    /// Unticks every photo in one set.
-    func clearPhotoSelection(in group: SimilarGroup) {
-        for p in group.photos { photoSelection.remove(p.path) }
+    /// "Remove all extras": ticks every photo except the best of each set and goes straight to the approval sheet.
+    func reviewPhotoExtras() {
+        selectPhotoExtras()
+        requestPhotoRemoval(photoGroups.flatMap(\.photos).filter { photoSelection.contains($0.path) },
+                            reason: "Similar photos")
     }
 
     /// Ticks or unticks one photo. Refuses to tick the last unticked photo, so a set always keeps one.
@@ -988,6 +979,19 @@ final class AppModel {
             for f in g.files where f.path != g.suggestedKeep && canTrash(f.path) { picked.insert(f.path) }
         }
         dupSelection = picked
+    }
+
+    /// Opens the approval sheet for the ticked duplicate copies. Nothing is moved until the user confirms there.
+    func requestDuplicateRemoval() {
+        let items = dupGroups.flatMap(\.files).filter { dupSelection.contains($0.path) }.map { ($0.path, $0.size) }
+        requestTrash(items, reason: "Duplicate files")
+    }
+
+    /// "Remove all extras": ticks every copy except the suggested one and goes straight to the approval sheet, where
+    /// the exact list can be checked before anything happens.
+    func reviewDuplicateExtras() {
+        selectDuplicateExtras()
+        requestDuplicateRemoval()
     }
 
     /// Ticks or unticks one copy. Refuses to tick the last unticked copy, so a group always keeps one.

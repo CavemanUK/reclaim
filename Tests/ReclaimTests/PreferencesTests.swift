@@ -19,63 +19,7 @@ private func scratchDefaults() -> (UserDefaults, () -> Void) {
     return (defaults, { defaults.removePersistentDomain(forName: name) })
 }
 
-@Suite struct PreviewTests {
-    /// A log whose safety policy treats a temporary folder as the home folder, so allowed paths can be tested.
-    private func makeLog(home: String) -> ActionLog {
-        ActionLog(fileURL: URL(fileURLWithPath: home + "/history.json"), policy: SafetyPolicy(home: home))
-    }
-
-    @Test func previewMovesNothingAndRecordsNothing() throws {
-        let home = tempDir()
-        defer { try? FileManager.default.removeItem(atPath: home) }
-        let file = home + "/Downloads/keep-me.txt"
-        try FileManager.default.createDirectory(atPath: home + "/Downloads", withIntermediateDirectories: true)
-        FileManager.default.createFile(atPath: file, contents: Data([1, 2, 3]))
-        let log = makeLog(home: home)
-
-        let lines = log.previewTrash([(file, 3)])
-
-        #expect(lines.count == 1)
-        if case .refused = lines[0].outcome { Issue.record("an ordinary file in Downloads should be previewable") }
-        #expect(FileManager.default.fileExists(atPath: file), "preview must leave the file where it is")
-        #expect(log.entries.isEmpty, "preview must not write anything to the undo history")
-        #expect(!FileManager.default.fileExists(atPath: home + "/history.json"), "preview must not save a history file")
-    }
-
-    @Test func previewRefusesTheSameThingsTheRealRunRefuses() {
-        let home = tempDir()
-        defer { try? FileManager.default.removeItem(atPath: home) }
-        let log = makeLog(home: home)
-        // Nothing here can be moved: one is outside the home folder, one doesn't exist. So running the real
-        // `trash` is safe, and its refusals must match the preview word for word.
-        let items: [(path: String, size: Int64)] = [("/etc/hosts", 10), (home + "/Downloads/missing.txt", 5)]
-
-        let preview = log.previewTrash(items)
-        let real = log.trash(items, reason: "test").failed
-
-        #expect(real.count == 2)
-        for (line, failure) in zip(preview, real) {
-            #expect(line.outcome == .refused(failure.message))
-        }
-    }
-
-    @Test func previewOfAMissingFileSaysSo() {
-        let home = tempDir()
-        defer { try? FileManager.default.removeItem(atPath: home) }
-        let lines = makeLog(home: home).previewTrash([(home + "/Downloads/nope.txt", 1)])
-        #expect(lines.first?.outcome == .refused("File no longer exists."))
-    }
-
-    @Test func evictPreviewRefusesAFileThatIsNotInICloud() {
-        let home = tempDir()
-        defer { try? FileManager.default.removeItem(atPath: home) }
-        let file = home + "/plain.txt"
-        FileManager.default.createFile(atPath: file, contents: Data([1]))
-        let lines = makeLog(home: home).previewEvict([(file, 1)])
-        #expect(lines.first?.outcome == .refused("Not in iCloud."))
-        #expect(FileManager.default.fileExists(atPath: file))
-    }
-
+@Suite struct EvictWordingTests {
     @Test func eachEvictRefusalHasItsOwnWording() {
         #expect(CloudEvict.Status(inCloud: false, uploaded: false, downloaded: false).refusal == "Not in iCloud.")
         #expect(CloudEvict.Status(inCloud: true, uploaded: false, downloaded: true).refusal == "Still uploading to iCloud.")
@@ -162,16 +106,5 @@ private func scratchDefaults() -> (UserDefaults, () -> Void) {
         #expect(loaded.dupMinSize == 1 << 20)
         #expect(loaded.photoSource == "Folders")
         #expect(loaded.photoStrictness == .balanced)
-    }
-
-    @Test func resetForgetsEverythingSavedAndNothingElse() {
-        let (defaults, cleanup) = scratchDefaults(); defer { cleanup() }
-        defaults.set(["/Users/x/Mine"], forKey: "customFolders")   // saved elsewhere in the app; must survive
-        var settings = Settings.defaults(fileExists: present)
-        settings.photoStrictness = .strict
-        Preferences.save(settings, to: defaults)
-        Preferences.reset(in: defaults)
-        #expect(Preferences.load(from: defaults, fileExists: present) == Settings.defaults(fileExists: present))
-        #expect(defaults.stringArray(forKey: "customFolders") == ["/Users/x/Mine"])
     }
 }

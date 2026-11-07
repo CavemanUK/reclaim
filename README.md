@@ -23,7 +23,7 @@ Nothing leaves your Mac. Reclaim's own code makes no network requests and has no
 | **Uninstall apps** | Removes an app and its leftovers (caches, preferences, containers), with Homebrew awareness for cask-installed apps. |
 | **Undo** | A log of everything Reclaim moved, with one-click restore. |
 
-Every approval sheet has a **Preview** button that shows what would happen to each item (moved, left alone and why, any name clash or iCloud side effect) without changing anything. For Homebrew it runs Homebrew's own `--dry-run`.
+Every change goes through an approval sheet that lists the exact items first. The Homebrew sheet also has a **Preview** button, which runs Homebrew's own `--dry-run` because those commands can't be undone.
 
 Homebrew commands (`cleanup`, `autoremove`, `uninstall --cask`) can be run from inside the app after you confirm the exact command. They are Homebrew's own operations, so unlike everything else in Reclaim they cannot be undone from the Undo screen. Anything that needs `sudo` is shown as text to copy into Terminal; Reclaim never runs it for you.
 
@@ -76,7 +76,7 @@ RECLAIM_DEV=1 ~/Applications/Reclaim.app/Contents/MacOS/Reclaim --scan ~/Picture
 - Top-level folders on external drives are protected; you have to open the folder and choose what is inside.
 - App leftovers are matched by exact bundle identifier, so uninstalling Chrome does not touch Chrome Canary's data.
 - Every move is recorded in the action log (`~/Library/Application Support/Reclaim/history.json`) and in the unified log under the `actions` category.
-- Your choices on the Duplicates and Similar photos screens (folders, minimum size, photo source, strictness) are remembered in the app's preferences, along with any scan folders you add. Scan results and ticked selections are never saved. "Reset to defaults" forgets the choices.
+- Your choices on the Duplicates and Similar photos screens (folders, minimum size, photo source, strictness) are remembered in the app's preferences, along with any scan folders you add. Scan results and ticked selections are never saved.
 - The Over time history (`trend.json`, same folder) holds only totals, per-category sizes and the names and sizes of your largest folders. It never leaves your Mac and can be cleared from the Over time screen.
 - Files stored only in iCloud are skipped rather than downloaded.
 

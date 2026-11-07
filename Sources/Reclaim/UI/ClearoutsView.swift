@@ -159,9 +159,13 @@ private struct KindCard: View {
                 Spacer()
             }
             HStack {
-                Button("Select all") { model.selectClearouts(kind) }
+                // One button that flips between choosing everything and clearing the choice.
+                if chosen == 0 {
+                    Button("Select all") { model.selectClearouts(kind) }
+                } else {
+                    Button("Clear choice") { model.clearClearoutSelection(kind) }
+                }
                 Button("Older than 30 days (\(old))") { model.selectClearouts(kind, olderThanDays: 30) }.disabled(old == 0)
-                Button("Clear") { model.clearClearoutSelection(kind) }.disabled(chosen == 0)
                 Spacer()
                 if chosen > 0 { Text("\(chosen) chosen").font(.callout).foregroundStyle(.red) }
             }

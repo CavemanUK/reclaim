@@ -273,8 +273,7 @@ final class ActionLog: @unchecked Sendable {
     }
 
     /// The checks that happen before anything is moved: the safety policy, then whether the item still exists.
-    /// Returns why the item must be left alone, or nil when it may go ahead. `trash` and `previewTrash` both call
-    /// this, so a preview can never say "yes" to something the real run would refuse.
+    /// Returns why the item must be left alone, or nil when it may go ahead.
     func preflight(_ path: String, uninstalling scope: UninstallScope? = nil) -> TrashFailure? {
         let verdict = scope.map { policy.verdict(forPath: path, uninstalling: $0) } ?? policy.verdict(forPath: path)
         if case .denied(let why) = verdict { return TrashFailure(path: path, message: why) }
@@ -441,56 +440,6 @@ final class ActionLog: @unchecked Sendable {
             try encoder.encode(snapshot).write(to: fileURL, options: .atomic)
         } catch {
             actionLogger.error("could not save history: \(error.localizedDescription, privacy: .public)")
-        }
-    }
-}
-
-// MARK: - Preview (changes nothing)
-
-/// What an approved request would do to one item. Produced by the preview functions below.
-struct PreviewLine: Identifiable, Sendable, Equatable {
-    enum Outcome: Sendable, Equatable {
-        /// Would be moved to the Trash (or have its local copy removed). `note` carries anything worth knowing first.
-        case wouldAct(note: String?)
-        /// Would be left alone, with the reason.
-        case refused(String)
-    }
-    var id: String { path }
-    let path: String
-    let size: Int64
-    let outcome: Outcome
-}
-
-extension ActionLog {
-    /// Works out what `trash` would do for each item without touching anything: no move, no history entry, no
-    /// file written. It runs the same `preflight` checks the real run uses.
-    func previewTrash(_ items: [(path: String, size: Int64)], uninstalling scope: UninstallScope? = nil) -> [PreviewLine] {
-        let trashDir = URL(fileURLWithPath: NSHomeDirectory() + "/.Trash")
-        return items.map { item in
-            if let refusal = preflight(item.path, uninstalling: scope) {
-                return PreviewLine(path: item.path, size: item.size, outcome: .refused(refusal.message))
-            }
-            var notes: [String] = []
-            let name = (item.path as NSString).lastPathComponent
-            // The real run renames on a clash ("name 2.ext") instead of overwriting, so say so.
-            let target = Self.uniqueURL(trashDir.appendingPathComponent(name))
-            if target.lastPathComponent != name {
-                notes.append("A file with this name is already in the Trash, so it will be called “\(target.lastPathComponent)”.")
-            }
-            if (try? URL(fileURLWithPath: item.path).resourceValues(forKeys: [.isUbiquitousItemKey]))?.isUbiquitousItem == true {
-                notes.append("This is in iCloud Drive, so it will also disappear from your other devices (recoverable from iCloud's Recently Deleted).")
-            }
-            return PreviewLine(path: item.path, size: item.size, outcome: .wouldAct(note: notes.isEmpty ? nil : notes.joined(separator: " ")))
-        }
-    }
-
-    /// Works out what `evict` would do ("keep in iCloud only") without removing any local copy.
-    func previewEvict(_ items: [(path: String, size: Int64)]) -> [PreviewLine] {
-        items.map { item in
-            if let refusal = CloudEvict.status(of: item.path).refusal {
-                return PreviewLine(path: item.path, size: item.size, outcome: .refused(refusal))
-            }
-            return PreviewLine(path: item.path, size: item.size, outcome: .wouldAct(note: nil))
         }
     }
 }

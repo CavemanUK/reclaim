@@ -136,11 +136,7 @@ private struct AppDetail: View {
                     if app.fromAppStore { pill("App Store", "bag") }
                     if app.isApple { pill("Apple app", "apple.logo") }
                 }
-                HStack {
-                    Button("Show in Finder") { model.reveal(app.path) }
-                    if !running { Button("Open") { NSWorkspace.shared.open(URL(fileURLWithPath: app.path)) } }
-                }
-                .controlSize(.small)
+                Button("Show in Finder") { model.reveal(app.path) }.controlSize(.small)
             }
         }
     }

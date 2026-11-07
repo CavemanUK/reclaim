@@ -390,13 +390,12 @@ struct AccessGuide: View {
             VStack(alignment: .leading, spacing: 6) {
                 step(1, "Click “Open Settings”.")
                 step(2, "If Reclaim is already listed, select it and click − first. macOS forgets the permission whenever Reclaim is updated, even though the switch still looks on.")
-                step(3, "Click +, press ⌘⇧G, and pick Reclaim.app (“Show Reclaim” opens its folder).")
+                step(3, "Click +, press ⌘⇧G, type ~/Applications, and pick Reclaim.")
                 step(4, "Switch Reclaim on, then click “Restart Reclaim”.")
             }
             HStack {
                 Button("Open Settings") { model.openFullDiskAccessSettings() }.buttonStyle(.borderedProminent)
-                Button("Show Reclaim") { model.reveal(Bundle.main.bundlePath) }
-                Button("Restart Reclaim") { model.relaunch() }
+                Button("Restart Reclaim") { model.relaunch() }.buttonStyle(.link)
             }
         }
         .card()

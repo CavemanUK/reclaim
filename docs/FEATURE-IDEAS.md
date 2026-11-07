@@ -37,7 +37,7 @@ Whole-disk scan with honest reconciliation against APFS · space map · plain-En
 
 ## Trust and safety
 
-- ~~**Dry run.**~~ Done as a Preview button on each approval sheet. (Original idea: A "show me what would happen" toggle on every approval sheet that lists the exact moves and does nothing. Cheap and reassuring.)
+- ~~**Dry run.**~~ Done for Homebrew only (a Preview button running `--dry-run`). The other approval sheets already list every item and can be undone, so a second preview was removed to keep the app simple. (Original idea: A "show me what would happen" toggle on every approval sheet that lists the exact moves and does nothing. Cheap and reassuring.)
 - **Per-item "don't suggest again"** and an exclusions list (folders Reclaim should never look in).
 - **Activity log in the app.** The unified log already records every move; surface it under Undo.
 

@@ -85,9 +85,6 @@ struct SimilarPhotosView: View {
                     .font(.callout).foregroundStyle(.secondary)
             }
             HStack {
-                // The source, folders and strictness are remembered between launches; this puts them back.
-                Button("Reset to defaults") { model.resetSettings() }
-                    .buttonStyle(.link).help("Forget the saved source, folders and strictness")
                 Spacer()
                 if model.photoState == .working {
                     Button("Stop") { model.cancelPhotos() }
@@ -120,9 +117,8 @@ struct SimilarPhotosView: View {
                 Text("Turn it on under Privacy & Security › Photos. If it already shows Full Access, macOS hasn't told Reclaim yet: restart Reclaim.")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
-                    Button("Open Settings") { model.openPhotosPrivacySettings() }
-                    Button("Check again") { model.refreshPhotoAuth() }
-                    Button("Restart Reclaim") { model.relaunch() }
+                    Button("Open Settings") { model.openPhotosPrivacySettings() }.buttonStyle(.borderedProminent)
+                    Button("Restart Reclaim") { model.relaunch() }.buttonStyle(.link)
                 }
             }
         default:
@@ -153,10 +149,12 @@ struct SimilarPhotosView: View {
                 HStack {
                     Text("Each photo has a Keep / Remove switch. Click a photo to compare its set.").foregroundStyle(.secondary)
                     Spacer()
-                    Button { model.selectPhotoExtras() } label: { Label("Remove all extras", systemImage: "trash") }
+                    if !model.photoSelection.isEmpty {
+                        Button("Keep everything") { model.photoSelection = [] }
+                    }
+                    Button { model.reviewPhotoExtras() } label: { Label("Remove all extras…", systemImage: "trash") }
                         .buttonStyle(.borderedProminent).tint(.red)
-                        .help("Marks every photo for removal except the best of each set")
-                    Button("Keep everything") { model.photoSelection = [] }.disabled(model.photoSelection.isEmpty)
+                        .help("Lists every photo except the best of each set, for you to approve")
                 }
                 ForEach(model.photoGroups) { PhotoGroupCard(group: $0) }
             }
@@ -300,14 +298,6 @@ private struct PhotoGroupCard: View {
                         .padding(.horizontal, 10).padding(.vertical, 4)
                         .background(Color.green.opacity(0.15), in: Capsule())
                 }
-                let extrasChosen = group.photos.filter { $0.path != group.suggestedKeep && model.photoSelection.contains($0.path) }.count
-                if extrasChosen < group.photos.count - 1 {
-                    Button("Remove all but best") { model.selectPhotoExtras(in: group) }.tint(.red)
-                } else {
-                    Button("Keep all") { model.clearPhotoSelection(in: group) }
-                }
-                Button { model.photoCompare = group } label: { Label("Compare", systemImage: "rectangle.split.2x1") }
-                    .buttonStyle(.borderedProminent).tint(.pink)
             }
             ScrollView(.horizontal) {
                 LazyHStack(alignment: .top, spacing: 12) {
@@ -390,12 +380,6 @@ private struct PhotoCompareSheet: View {
                         .font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer()
-                let extrasChosen = group.photos.filter { $0.path != group.suggestedKeep && model.photoSelection.contains($0.path) }.count
-                if extrasChosen < count - 1 {
-                    Button("Remove all but best") { model.selectPhotoExtras(in: group) }.tint(.red)
-                } else {
-                    Button("Keep all") { model.clearPhotoSelection(in: group) }
-                }
                 Button("Done") { dismiss() }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
             }
             ScrollView {
@@ -459,7 +443,6 @@ private struct PhotoCompareSheet: View {
                 if photo.isAsset {
                     Button("Open Photos") { LibrarySource.openPhotosApp() }
                 } else {
-                    Button("Show in Finder") { model.reveal(photo.path) }
                     Button("Open") { NSWorkspace.shared.open(URL(fileURLWithPath: photo.path)) }
                 }
             }
