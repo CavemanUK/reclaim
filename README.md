@@ -33,7 +33,7 @@ Homebrew commands (`cleanup`, `autoremove`, `uninstall --cask`) can be run from 
 ## Install
 
 ```bash
-git clone https://github.com/YOUR-USERNAME/Reclaim.git
+git clone https://github.com/CavemanUK/reclaim.git
 cd Reclaim
 ./scripts/install.sh
 ```
