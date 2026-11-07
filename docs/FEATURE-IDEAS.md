@@ -37,13 +37,13 @@ Whole-disk scan with honest reconciliation against APFS · space map · plain-En
 
 ## Trust and safety
 
-- **Dry run.** A "show me what would happen" toggle on every approval sheet that lists the exact moves and does nothing. Cheap and reassuring.
+- ~~**Dry run.**~~ Done as a Preview button on each approval sheet. (Original idea: A "show me what would happen" toggle on every approval sheet that lists the exact moves and does nothing. Cheap and reassuring.)
 - **Per-item "don't suggest again"** and an exclusions list (folders Reclaim should never look in).
 - **Activity log in the app.** The unified log already records every move; surface it under Undo.
 
 ## Polish and distribution
 
-- **Persist settings (S):** chosen folders for duplicates and photos, strictness, sort orders. Today they reset on launch.
+- ~~**Persist settings (S):**~~ Done for the duplicate and photo folders, minimum size, photo source and strictness. Sort orders are not saved yet.
 - **Keyboard and VoiceOver pass (M):** labels on the toggles and map tiles, arrow-key navigation in the map.
 - **Export the report (S):** copy or save as Markdown/PDF from the report card.
 - **Menu bar extra (M):** free space at a glance, "scan now", a warning when free space drops under a threshold you set.

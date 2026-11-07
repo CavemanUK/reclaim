@@ -15,6 +15,13 @@ struct BrewCommand: Identifiable, Equatable, Sendable {
     /// The command as a user would type it, for showing and copying.
     var display: String { (["brew"] + arguments).joined(separator: " ") }
 
+    /// The same command with Homebrew's own `--dry-run`, which lists what would be removed and removes nothing.
+    /// Nil for `uninstall`, which has no dry run. Only `cleanup` and `autoremove` are previewable.
+    var previewArguments: [String]? {
+        guard let first = arguments.first, ["cleanup", "autoremove"].contains(first) else { return nil }
+        return arguments.contains("--dry-run") ? arguments : arguments + ["--dry-run"]
+    }
+
     /// Subcommands Reclaim is willing to run. Anything else only ever appears as text to copy.
     static let allowed: Set<String> = ["cleanup", "autoremove", "uninstall"]
 

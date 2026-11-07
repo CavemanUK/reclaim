@@ -85,6 +85,9 @@ struct SimilarPhotosView: View {
                     .font(.callout).foregroundStyle(.secondary)
             }
             HStack {
+                // The source, folders and strictness are remembered between launches; this puts them back.
+                Button("Reset to defaults") { model.resetSettings() }
+                    .buttonStyle(.link).help("Forget the saved source, folders and strictness")
                 Spacer()
                 if model.photoState == .working {
                     Button("Stop") { model.cancelPhotos() }

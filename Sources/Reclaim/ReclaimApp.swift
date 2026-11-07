@@ -223,6 +223,9 @@ struct ToastView: View {
 struct TrashConfirmSheet: View {
     let request: TrashRequest
     @Environment(AppModel.self) private var model
+    /// Set by the Preview button: what each item would do, worked out without changing anything.
+    @State private var preview: [String: PreviewLine]?
+    @State private var previewing = false
 
     /// Library photos: the wording says Photos will ask again and that recovery happens inside Photos.
     private var isPhotos: Bool { request.kind == .photosLibrary }
@@ -245,6 +248,13 @@ struct TrashConfirmSheet: View {
                 }
             }
 
+            if preview != nil {
+                Label("Preview only. Nothing has been changed.", systemImage: "eye")
+                    .font(.callout.weight(.semibold)).foregroundStyle(.teal)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(Color.teal.opacity(0.14), in: Capsule())
+            }
+
             List {
                 ForEach(request.allowed) { entry in
                     HStack(spacing: 10) {
@@ -259,6 +269,7 @@ struct TrashConfirmSheet: View {
                                 Text(((entry.path as NSString).deletingLastPathComponent).replacingOccurrences(of: model.home, with: "~"))
                                     .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                             }
+                            if let line = preview?[entry.path] { previewRow(line) }
                         }
                         Spacer()
                         Text(ByteFormat.string(entry.size)).monospacedDigit().foregroundStyle(.secondary)
@@ -287,6 +298,15 @@ struct TrashConfirmSheet: View {
                 .font(.callout).foregroundStyle(.secondary)
 
             HStack {
+                if !isPhotos {
+                    Button {
+                        if preview != nil { preview = nil } else { runPreview() }
+                    } label: {
+                        Label(preview != nil ? "Hide preview" : "Preview", systemImage: "eye")
+                    }
+                    .controlSize(.large).disabled(previewing || request.allowed.isEmpty)
+                    .help("Shows exactly what would happen to each item, without changing anything")
+                }
                 Spacer()
                 Button("Not now", role: .cancel) { model.trashRequest = nil }
                     .keyboardShortcut(.cancelAction).controlSize(.large)
@@ -297,6 +317,30 @@ struct TrashConfirmSheet: View {
         }
         .padding(24)
         .frame(width: 660, height: 520)
+    }
+
+    /// One line under an item's name saying what the real run would do.
+    @ViewBuilder private func previewRow(_ line: PreviewLine) -> some View {
+        switch line.outcome {
+        case .wouldAct(let note):
+            Label(isEvict ? "Would keep in iCloud only" : "Would move to the Trash", systemImage: "checkmark.circle")
+                .font(.caption).foregroundStyle(.green)
+            if let note { Text(note).font(.caption).foregroundStyle(.orange) }
+        case .refused(let why):
+            Label("Would be left alone: \(why)", systemImage: "hand.raised").font(.caption).foregroundStyle(.orange)
+        }
+    }
+
+    /// Asks the action log what it would do. The preview functions never move, write or delete anything.
+    private func runPreview() {
+        let items = request.allowed.map { (path: $0.path, size: $0.size) }
+        let log = model.log, scope = request.uninstalling, evict = isEvict
+        previewing = true
+        Task {
+            let lines = await runBlocking { evict ? log.previewEvict(items) : log.previewTrash(items, uninstalling: scope) }
+            preview = Dictionary(lines.map { ($0.path, $0) }, uniquingKeysWith: { first, _ in first })
+            previewing = false
+        }
     }
 }
 

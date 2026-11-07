@@ -266,8 +266,15 @@ struct BrewSheet: View {
                 Spacer()
                 switch model.brewState {
                 case .confirming:
+                    if command.previewArguments != nil {
+                        Button { model.previewBrew() } label: { Label("Preview", systemImage: "eye") }
+                            .disabled(model.brewPreviewing)
+                            .help("Runs Homebrew's own dry run: lists what would be removed and removes nothing")
+                    }
                     Button("Cancel", role: .cancel) { model.dismissBrew() }.keyboardShortcut(.cancelAction)
+                        .disabled(model.brewPreviewing)
                     Button("Run") { model.runBrew() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                        .disabled(model.brewPreviewing)
                 case .running:
                     Button("Running…") {}.disabled(true)
                 case .finished:

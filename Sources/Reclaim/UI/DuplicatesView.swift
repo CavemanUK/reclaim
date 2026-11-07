@@ -66,6 +66,9 @@ struct DuplicatesView: View {
                     Text("10 MB").tag(Int64(10 << 20))
                 }
                 .fixedSize()
+                // Folders and the size are remembered between launches; this puts them back to the usual ones.
+                Button("Reset to defaults") { model.resetSettings() }
+                    .buttonStyle(.link).help("Forget the saved folders and size")
                 Spacer()
                 if model.dupState == .working {
                     Button("Stop") { model.cancelDuplicates() }

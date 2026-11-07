@@ -208,14 +208,9 @@ final class AppModel {
     /// Shared by the duplicate, photo, clear-out and app-list screens.
     enum DupState { case idle, working, done }
     /// Folders the duplicate search covers. Starts as the usual personal folders that exist; the user can add more.
-    var dupFolders: [URL] = {
-        let home = NSHomeDirectory()
-        return ["Documents", "Downloads", "Desktop", "Pictures", "Movies", "Music"]
-            .map { URL(fileURLWithPath: home + "/" + $0) }
-            .filter { FileManager.default.fileExists(atPath: $0.path) }
-    }()
+    var dupFolders: [URL] = [] { didSet { persistSettings() } }
     /// Files smaller than this (1 MB by default) are ignored, so the search stays fast and the results worthwhile.
-    var dupMinSize: Int64 = 1 << 20
+    var dupMinSize: Int64 = 1 << 20 { didSet { persistSettings() } }
     var dupState: DupState = .idle
     var dupProgress = DupProgress()
     /// The group open in the side-by-side compare sheet, if any.
@@ -237,17 +232,13 @@ final class AppModel {
         var id: String { rawValue }
     }
     /// The source chosen on the Similar photos screen.
-    var photoSourceKind: PhotoSourceKind = .folders
+    var photoSourceKind: PhotoSourceKind = .folders { didSet { persistSettings() } }
     /// Photos permission. Re-read whenever the app becomes active, because the user can change it in System Settings.
     var photoAuth: PHAuthorizationStatus = LibrarySource.authorization
     /// Folders searched when the source is `.folders`.
-    var photoFolders: [URL] = {
-        let home = NSHomeDirectory()
-        return ["Pictures", "Downloads", "Desktop"].map { URL(fileURLWithPath: home + "/" + $0) }
-            .filter { FileManager.default.fileExists(atPath: $0.path) }
-    }()
+    var photoFolders: [URL] = [] { didSet { persistSettings() } }
     /// How alike photos must be to be grouped.
-    var photoStrictness: Strictness = .balanced
+    var photoStrictness: Strictness = .balanced { didSet { persistSettings() } }
     var photoState: DupState = .idle
     var photoProgress = PhotoProgress()
     /// Sets of near-identical photos found by the last search, each with a suggested best photo.
@@ -376,6 +367,26 @@ final class AppModel {
         }
     }
 
+    /// True while Homebrew's dry run is running for the preview.
+    var brewPreviewing = false
+
+    /// Runs the command with Homebrew's own `--dry-run` and shows the output in the sheet. Nothing is removed, the
+    /// sheet stays on the approval step, and nothing is logged as an action.
+    func previewBrew() {
+        guard let command = brewRequest, case .confirming = brewState, !brewPreviewing,
+              let arguments = command.previewArguments else { return }
+        brewPreviewing = true
+        brewOutput = "Preview only. Nothing is removed.\n$ brew \(arguments.joined(separator: " "))\n\n"
+        Task {
+            let status = await CommandRunner.runBrew(arguments) { text in
+                Task { @MainActor in self.brewOutput += text }
+            }
+            if status == nil { brewOutput += "Homebrew isn't installed at /opt/homebrew or /usr/local.\n" }
+            else if brewOutput.hasSuffix("\n\n") { brewOutput += "Nothing to remove.\n" }
+            brewPreviewing = false
+        }
+    }
+
     /// Closes the sheet. Ignored while the command is running, so a running command can't be left unattended.
     func dismissBrew() {
         if case .running = brewState { return }
@@ -437,6 +448,7 @@ final class AppModel {
     /// Loads saved settings, history and trend data, and starts watching for drives being mounted and permissions changing.
     init() {
         customFolders = (UserDefaults.standard.stringArray(forKey: "customFolders") ?? []).map { URL(fileURLWithPath: $0) }
+        applySettings(Preferences.load())
         refreshVolumes()
         let center = NSWorkspace.shared.notificationCenter
         // Keep the list of external drives current as they are plugged in or ejected.
@@ -520,6 +532,36 @@ final class AppModel {
         externalVolumes = urls.filter { url in
             url.path.hasPrefix("/Volumes/") && url.resolvingSymlinksInPath().path != "/"
         }
+    }
+
+    // MARK: - Remembered settings
+
+    /// Saves the remembered choices. Called from the `didSet` of each one, but not while `applySettings` is loading.
+    private func persistSettings() {
+        guard !loadingSettings else { return }
+        Preferences.save(Settings(
+            dupFolders: dupFolders, dupMinSize: dupMinSize, photoSource: photoSourceKind.rawValue,
+            photoFolders: photoFolders, photoStrictness: photoStrictness))
+    }
+
+    /// True while saved values are being copied in, so loading doesn't write them straight back.
+    private var loadingSettings = false
+
+    /// Copies loaded or default settings into the observable properties.
+    private func applySettings(_ settings: Settings) {
+        loadingSettings = true
+        dupFolders = settings.dupFolders
+        dupMinSize = settings.dupMinSize
+        photoSourceKind = PhotoSourceKind(rawValue: settings.photoSource) ?? .folders
+        photoFolders = settings.photoFolders
+        photoStrictness = settings.photoStrictness
+        loadingSettings = false
+    }
+
+    /// Forgets the saved choices and goes back to the defaults (the usual personal folders, 1 MB, balanced).
+    func resetSettings() {
+        Preferences.reset()
+        applySettings(Settings.defaults())
     }
 
     /// Lets the user pick a folder or drive to scan, remembers it, and makes it the current target.
@@ -981,8 +1023,7 @@ final class AppModel {
     /// Builds the approval sheet for "keep in iCloud only". Only items confirmed to be in iCloud are offered.
     func requestEvict(_ items: [(path: String, size: Int64)], reason: String) {
         let entries = items.map { item -> TrashRequest.Entry in
-            let s = CloudEvict.status(of: item.path)
-            let blocked: String? = !s.inCloud ? "Not in iCloud." : (!s.uploaded ? "Still uploading to iCloud." : (!s.downloaded ? "Already in iCloud only." : nil))
+            let blocked = CloudEvict.status(of: item.path).refusal
             return TrashRequest.Entry(path: item.path, name: (item.path as NSString).lastPathComponent, size: item.size, blockedReason: blocked)
         }
         trashRequest = TrashRequest(kind: .cloudEvict, reason: reason, entries: entries)

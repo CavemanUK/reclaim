@@ -13,6 +13,15 @@ enum CloudEvict {
         let uploaded: Bool       // iCloud has the full content, so evicting is safe
         let downloaded: Bool     // a local copy currently exists
         var canEvict: Bool { inCloud && uploaded && downloaded }
+
+        /// Why this item cannot be evicted right now, in plain English, or nil when it can. The approval sheet and
+        /// the preview both use this, so they always agree.
+        var refusal: String? {
+            if !inCloud { return "Not in iCloud." }
+            if !uploaded { return "Still uploading to iCloud." }
+            if !downloaded { return "Already in iCloud only." }
+            return nil
+        }
     }
 
     /// Resource keys needed to answer `status(of:)` and to walk a folder.
