@@ -21,6 +21,9 @@ struct ReclaimApp: App {
             CLIScan.probe(dir: args[i + 1], out: args[o + 1])
         }
         if args.contains("--apps") { CLIScan.apps() }
+        if let i = args.firstIndex(of: "--trash-file"), let o = args.firstIndex(of: "--out"), i + 1 < args.count, o + 1 < args.count {
+            CLIScan.trashFile(path: args[i + 1], out: args[o + 1], restore: args.contains("--restore"))
+        }
         if args.contains("--evict-test") { CLIScan.evictTest() }
         if let o = args.firstIndex(of: "--report"), o + 1 < args.count { CLIScan.report(out: args[o + 1]) }
         if let o = args.firstIndex(of: "--clearouts"), o + 1 < args.count {
@@ -347,6 +350,29 @@ enum CLIScan {
             done.signal()
         }
         done.wait()
+        exit(0)
+    }
+
+    /// Moves one file to the Trash exactly as the app would (same ActionLog path), as the real app process so
+    /// macOS privacy rules apply. Optionally restores it. Writes what happened to `out`.
+    static func trashFile(path: String, out: String, restore: Bool) {
+        var lines: [String] = []
+        let dir = NSTemporaryDirectory() + "reclaim-trashfile-\(UUID().uuidString)"
+        let log = ActionLog(fileURL: URL(fileURLWithPath: dir + "/history.json"))
+        let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int64) ?? 0
+        let result = log.trash([(path, size ?? 0)], reason: "dev trash-file")
+        lines.append("trashed: \(result.done.count)")
+        for f in result.failed { lines.append("failed: \(f.message) permission=\(f.isPermission)") }
+        if let e = result.done.first {
+            lines.append("trashPath: \(e.trashPath ?? "nil")")
+            lines.append("original gone: \(!FileManager.default.fileExists(atPath: path))")
+            if restore {
+                lines.append("restore: \(log.restore(e.id) ?? "ok")")
+                lines.append("back at original: \(FileManager.default.fileExists(atPath: path))")
+            }
+        }
+        try? lines.joined(separator: "\n").write(toFile: out, atomically: true, encoding: .utf8)
+        try? FileManager.default.removeItem(atPath: dir)
         exit(0)
     }
 

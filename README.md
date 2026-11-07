@@ -61,7 +61,7 @@ The test script passes extra flags because Swift Testing lives in the Command Li
 
 ## Developer flags
 
-The release binary contains a few read-only diagnostics (scan, duplicate and photo checks used by the test workflow, plus two that create and remove a throwaway file). They are off unless `RECLAIM_DEV=1` is set in the environment, so launching the app normally can never reach them:
+The release binary contains a few diagnostics used by the test workflow: read-only scan, duplicate and photo checks, plus three that touch a file you name or create a throwaway one (`--trash-file`, `--selftest-trash`, `--evict-test`). They are off unless `RECLAIM_DEV=1` is set in the environment, so launching the app normally can never reach them:
 
 ```bash
 RECLAIM_DEV=1 ~/Applications/Reclaim.app/Contents/MacOS/Reclaim --scan ~/Pictures

@@ -191,7 +191,22 @@ final class ActionLog: @unchecked Sendable {
                     size: item.size, reason: reason, status: .trashed))
             } catch {
                 let first = TrashFailure.from(error, path: item.path)
-                // Second attempt through the system's own recycle path. It needs the main thread to deliver
+                // Second attempt: a coordinated move into ~/.Trash. Plain trashItem is refused (error 513) for
+                // iCloud-synced files another app created; the coordinated move is accepted and is just as recoverable.
+                if first.isPermission {
+                    let trashDir = URL(fileURLWithPath: NSHomeDirectory() + "/.Trash")
+                    let destination = Self.uniqueURL(trashDir.appendingPathComponent(url.lastPathComponent))
+                    let attempt = Self.coordinatedMove(from: url, to: destination)
+                    if let moved = attempt.url {
+                        actionLogger.info("coordinated move \(item.path, privacy: .public) -> \(moved.path, privacy: .public)")
+                        done.append(HistoryEntry(
+                            id: UUID(), date: Date(), originalPath: item.path, trashPath: moved.path,
+                            size: item.size, reason: reason, status: .trashed))
+                        continue
+                    }
+                    actionLogger.error("coordinated move failed for \(item.path, privacy: .public): \(String(describing: attempt.error), privacy: .public)")
+                }
+                // Third attempt through the system's own recycle path. It needs the main thread to deliver
                 // its answer, so it can only be used when we are not already on the main thread.
                 if !Thread.isMainThread, let moved = Self.recycle(url) {
                     actionLogger.info("recycled \(item.path, privacy: .public) -> \(moved.path, privacy: .public)")
@@ -222,6 +237,42 @@ final class ActionLog: @unchecked Sendable {
         lock.unlock()
         save()
         return (done, failed)
+    }
+
+    /// A destination that doesn't exist yet: "name.ext", then "name 2.ext", "name 3.ext"…
+    static func uniqueURL(_ url: URL, exists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }) -> URL {
+        guard exists(url) else { return url }
+        let dir = url.deletingLastPathComponent()
+        let ext = url.pathExtension
+        let base = url.deletingPathExtension().lastPathComponent
+        var n = 2
+        while true {
+            let name = ext.isEmpty ? "\(base) \(n)" : "\(base) \(n).\(ext)"
+            let candidate = dir.appendingPathComponent(name)
+            if !exists(candidate) { return candidate }
+            n += 1
+        }
+    }
+
+    /// Moves `source` to `destination` under file coordination. This is what gets past the error 513 that a plain
+    /// `trashItem` hits on iCloud-synced Desktop and Documents files that another app created: macOS refuses the
+    /// uncoordinated move, but accepts the coordinated one. Returns the final URL, or the error.
+    static func coordinatedMove(from source: URL, to destination: URL) -> (url: URL?, error: Error?) {
+        var coordinationError: NSError?
+        var moved: URL?
+        var failure: Error?
+        NSFileCoordinator(filePresenter: nil).coordinate(
+            writingItemAt: source, options: .forMoving, writingItemAt: destination, options: .forReplacing,
+            error: &coordinationError
+        ) { src, dst in
+            do {
+                try FileManager.default.moveItem(at: src, to: dst)
+                moved = dst
+            } catch {
+                failure = error
+            }
+        }
+        return (moved, failure ?? coordinationError)
     }
 
     /// Asks macOS to recycle a file. Blocks until done. The completion arrives on the main thread,
@@ -263,7 +314,13 @@ final class ActionLog: @unchecked Sendable {
         do {
             try fm.createDirectory(
                 at: URL(fileURLWithPath: entry.originalPath).deletingLastPathComponent(), withIntermediateDirectories: true)
-            try fm.moveItem(atPath: trashPath, toPath: entry.originalPath)
+            do {
+                try fm.moveItem(atPath: trashPath, toPath: entry.originalPath)
+            } catch {
+                // Same reason as trashing: iCloud-synced locations may need the move to be coordinated.
+                let retry = Self.coordinatedMove(from: URL(fileURLWithPath: trashPath), to: URL(fileURLWithPath: entry.originalPath))
+                if retry.url == nil { throw retry.error ?? error }
+            }
         } catch {
             actionLogger.error("restore failed for \(entry.originalPath, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return error.localizedDescription

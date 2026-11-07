@@ -119,6 +119,18 @@ private func randomBytes(_ n: Int, seed: UInt64) -> [UInt8] {
     }
 }
 
+@Suite struct TrashNamingTests {
+    @Test func uniqueNamesNeverOverwrite() {
+        let base = URL(fileURLWithPath: "/t/.Trash/report.pdf")
+        #expect(ActionLog.uniqueURL(base, exists: { _ in false }).lastPathComponent == "report.pdf")
+        #expect(ActionLog.uniqueURL(base, exists: { $0.lastPathComponent == "report.pdf" }).lastPathComponent == "report 2.pdf")
+        let taken: Set<String> = ["report.pdf", "report 2.pdf", "report 3.pdf"]
+        #expect(ActionLog.uniqueURL(base, exists: { taken.contains($0.lastPathComponent) }).lastPathComponent == "report 4.pdf")
+        let noExt = URL(fileURLWithPath: "/t/.Trash/Makefile")
+        #expect(ActionLog.uniqueURL(noExt, exists: { $0.lastPathComponent == "Makefile" }).lastPathComponent == "Makefile 2")
+    }
+}
+
 @Suite struct RankingTests {
     private func photo(_ name: String, pixels: Int, size: Int64, sharp: Double, aes: Double?) -> PhotoInfo {
         var p = PhotoInfo(
