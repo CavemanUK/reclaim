@@ -1,5 +1,10 @@
 import SwiftUI
 
+// The "What's big" screen: an interactive treemap of the scanned `FileNode` tree, with a list alternative.
+// Clicking a block inspects it and double-clicking opens a folder. From the footer the user can reveal an item,
+// keep it in iCloud only, or request that it be trashed (the safety policy decides whether that is allowed).
+
+/// One block on the map: a child node, or the combined "Smaller items" remainder (which has no node).
 struct Tile: Identifiable {
     let id: String
     let node: FileNode?
@@ -7,6 +12,7 @@ struct Tile: Identifiable {
     let size: Int64
 }
 
+// MARK: - Treemap layout
 /// Squarified treemap layout (Bruls et al.). `sizes` must be sorted descending and positive.
 func squarify(sizes: [Double], in rect: CGRect) -> [CGRect] {
     let total = sizes.reduce(0, +)
@@ -17,6 +23,7 @@ func squarify(sizes: [Double], in rect: CGRect) -> [CGRect] {
     var r = rect
     var i = 0
 
+    // Worst aspect ratio among the rectangles of a row with this total area, laid along a side of length `side`.
     func worst(_ sum: Double, _ minA: Double, _ maxA: Double, _ side: Double) -> Double {
         max(side * side * maxA / (sum * sum), sum * sum / (side * side * minA))
     }
@@ -26,6 +33,7 @@ func squarify(sizes: [Double], in rect: CGRect) -> [CGRect] {
         var end = i + 1
         var sum = areas[i]
         var current = worst(sum, areas[i], areas[i], side)
+        // Keep adding items to the current row while that does not make the worst aspect ratio any worse.
         while end < areas.count {
             let newSum = sum + areas[end]
             let candidate = worst(newSum, areas[end], areas[i], side)
@@ -58,10 +66,13 @@ func squarify(sizes: [Double], in rect: CGRect) -> [CGRect] {
     return result
 }
 
+// MARK: - Colours
 /// Colour for a node on the map: folders take the colour of the category they belong to (matching the
 /// Overview bar), files take a colour by kind. A small per-name variation keeps neighbours distinguishable.
 enum MapColor {
+    /// Chooses the block colour for `node`.
     static func color(for node: FileNode, home: String) -> Color {
+        // A cheap name hash (FNV-1a style) so a name always gets the same small brightness change between runs.
         var h: UInt64 = 1469598103934665603
         for b in node.name.utf8 { h = (h ^ UInt64(b)) &* 1099511628211 }
         let wobble = Double(h % 100) / 100 * 0.16 - 0.08
@@ -82,7 +93,9 @@ enum MapColor {
     }
 }
 
+/// Helpers for tinting map blocks.
 extension Color {
+    /// Returns this colour with its HSB brightness shifted by `delta`, clamped so it stays visible on the dark background.
     func adjusted(brightness delta: Double) -> Color {
         let ns = NSColor(self).usingColorSpace(.deviceRGB) ?? NSColor(self)
         var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
@@ -91,13 +104,17 @@ extension Color {
     }
 }
 
+// MARK: - Screen
 struct SpaceMapView: View {
     @Environment(AppModel.self) private var model
+    /// The folders the user has drilled into, outermost first. Empty means the scan root is shown.
     @State private var stack: [FileNode] = []
     @State private var selected: FileNode?
+    /// `Tile.id` of the block under the pointer, used to highlight it and describe it in the footer.
     @State private var hoveredID: String?
     @State private var asList = false
 
+    /// The folder currently shown.
     private var current: FileNode? { stack.last ?? model.root }
 
     var body: some View {
@@ -150,6 +167,8 @@ struct SpaceMapView: View {
         }
     }
 
+    /// The blocks for a folder: its 60 largest children, plus one "Smaller items" block for the rest when that is
+    /// more than 0.5% of the folder. Drawing every child would be slow and unreadable.
     private func tiles(_ node: FileNode) -> [Tile] {
         var list = node.children.prefix(60).map { Tile(id: $0.path, node: $0, label: $0.name, size: $0.size) }
         let shown = list.reduce(Int64(0)) { $0 + $1.size }
@@ -160,6 +179,8 @@ struct SpaceMapView: View {
         return list.filter { $0.size > 0 }.sorted { $0.size > $1.size }
     }
 
+    /// Draws the map on a single `Canvas`, which is much cheaper than a SwiftUI view per block. Hover and tap
+    /// handling sits on a transparent layer on top and finds the block by hit-testing the computed rectangles.
     private func treemap(_ node: FileNode) -> some View {
         let items = tiles(node)
         let home = model.home
@@ -248,11 +269,13 @@ struct SpaceMapView: View {
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.quaternary))
     }
 
+    /// The block containing point `p`, if any.
     private func hit(_ items: [Tile], _ rects: [CGRect], _ p: CGPoint) -> Tile? {
         for (tile, rect) in zip(items, rects) where rect.contains(p) { return tile }
         return nil
     }
 
+    /// The same blocks as a list, for people who prefer rows to a map.
     private func listView(_ node: FileNode) -> some View {
         List(tiles(node)) { tile in
             HStack {
@@ -294,6 +317,7 @@ struct SpaceMapView: View {
         }
     }
 
+    /// Details and actions for the selected block, or a hint while nothing is selected.
     private func footer(_ node: FileNode) -> some View {
         HStack(spacing: 12) {
             if let s = selected {
@@ -316,6 +340,7 @@ struct SpaceMapView: View {
                     .tint(.cyan)
                     .help("Removes the copy on this Mac; the file stays in iCloud and downloads when opened")
                 }
+                // The button is disabled, with the policy's reason as its tooltip, when the path is protected.
                 let verdict = SafetyPolicy().verdict(forPath: s.path)
                 Button("Move to Trash…") {
                     model.requestTrash([(s.path, s.size)], reason: "Chosen in What's big")

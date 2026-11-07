@@ -1,10 +1,16 @@
 import SwiftUI
 
+// The "Duplicates" screen: choose folders, run `DuplicateFinder`, then review sets of identical files.
+// The suggested keeper in each set is never selected for removal by the bulk actions, and selected files go
+// to the Trash via `AppModel.requestTrash` after the user confirms.
+
+/// One colour per stage of the duplicate search, shared by the stage chips and the progress card.
 private let stageColors: [Color] = [.blue, .purple, .orange, .green]
 
 struct DuplicatesView: View {
     @Environment(AppModel.self) private var model
 
+    /// Total size of the files currently marked for removal.
     private var selectedBytes: Int64 {
         model.dupGroups.reduce(Int64(0)) { sum, g in
             sum + g.files.filter { model.dupSelection.contains($0.path) }.reduce(Int64(0)) { $0 + $1.size }
@@ -35,6 +41,7 @@ struct DuplicatesView: View {
 
     // MARK: Setup
 
+    /// Folder chooser, minimum size and the search button.
     private var setup: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Where should Reclaim look?").font(.headline)
@@ -80,6 +87,7 @@ struct DuplicatesView: View {
     // MARK: Results
 
     @ViewBuilder
+    /// Summary figures, bulk actions and one card per set of duplicates.
     private var results: some View {
         if model.dupGroups.isEmpty {
             ContentUnavailableView("No duplicates found", systemImage: "checkmark.seal",
@@ -129,6 +137,8 @@ struct DuplicatesView: View {
 
 // MARK: - Explaining the scan
 
+/// Explains what the search is doing at each of its four stages (matching `DupProgress.stage`), so a long
+/// scan is understandable rather than just a spinner.
 private struct DupWorkingCard: View {
     let progress: DupProgress
 
@@ -209,6 +219,7 @@ private struct DupWorkingCard: View {
 
 // MARK: - A set of duplicates
 
+/// One set of identical files, each row with a keep/remove switch.
 private struct GroupCard: View {
     let group: DupGroup
     @Environment(AppModel.self) private var model
@@ -280,6 +291,7 @@ private struct GroupCard: View {
 
 // MARK: - Side-by-side comparison
 
+/// Shows every copy of a set side by side with its metadata, so the user can pick which to keep.
 private struct CompareSheet: View {
     let group: DupGroup
     @Environment(AppModel.self) private var model
@@ -308,6 +320,7 @@ private struct CompareSheet: View {
         .frame(minWidth: 760, idealWidth: 980, minHeight: 560)
     }
 
+    /// The button that would remove the last unselected copy is disabled, so at least one copy always remains.
     private func pane(_ file: DupFile) -> some View {
         let keep = file.path == group.suggestedKeep
         let chosen = model.dupSelection.contains(file.path)

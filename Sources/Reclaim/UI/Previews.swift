@@ -3,6 +3,9 @@ import QuickLookThumbnailing
 import SwiftUI
 import UniformTypeIdentifiers
 
+// Small SwiftUI views for showing pictures and media: cached Quick Look thumbnails for files, Photos-library
+// thumbnails, and larger previews that can play video or audio in the compare sheets. All of them are read-only.
+
 /// Thumbnails for any file type macOS can preview (photos, video, PDF, documents), cached.
 enum ThumbnailLoader {
     nonisolated(unsafe) private static let cache: NSCache<NSString, NSImage> = {
@@ -12,6 +15,7 @@ enum ThumbnailLoader {
         return c
     }()
 
+    /// Returns a cached thumbnail, generating one with Quick Look on a miss. nil if the file has no preview.
     static func load(path: String, side: CGFloat) async -> NSImage? {
         let key = "\(path)@\(Int(side))" as NSString
         if let hit = cache.object(forKey: key) { return hit }
@@ -25,9 +29,11 @@ enum ThumbnailLoader {
     }
 }
 
+/// A coarse classification of a file by its type, used to decide whether a preview can be played.
 enum MediaKind {
     case image, video, audio, other
 
+    /// Classifies by file extension only, without opening the file.
     static func of(path: String) -> MediaKind {
         guard let type = UTType(filenameExtension: (path as NSString).pathExtension.lowercased()) else { return .other }
         if type.conforms(to: .image) { return .image }
@@ -55,6 +61,7 @@ struct PlayerView: NSViewRepresentable {
     }
 }
 
+/// A square thumbnail for a file, showing the file's icon until the preview has loaded.
 struct ThumbView: View {
     let path: String
     let side: CGFloat
@@ -91,6 +98,7 @@ struct PhotoThumb: View {
     }
 }
 
+/// A square thumbnail for a Photos library asset, loaded through `LibrarySource` (which never downloads from iCloud).
 struct AssetImage: View {
     let assetID: String
     let side: CGFloat
@@ -179,6 +187,7 @@ struct FilePreview: View {
         .onDisappear { player?.pause() }
     }
 
+    // Setting `playingPath` makes any other `FilePreview` stop, so only one file plays at a time.
     private func start() {
         let p = AVPlayer(url: URL(fileURLWithPath: path))
         player = p

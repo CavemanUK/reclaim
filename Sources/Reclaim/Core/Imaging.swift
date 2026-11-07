@@ -3,18 +3,28 @@ import Foundation
 import ImageIO
 import Vision
 
+// Image helpers shared by the photo features: decoding thumbnails, the perceptual hash, a sharpness metric and
+// thin wrappers around Vision. `SimilarPhotoFinder` and `PhotoClearouts` combine these into their pipelines.
+
+/// Stateless image utilities. Everything here only reads image data.
 enum Imaging {
+    /// File extensions treated as photos when scanning folders, including common RAW formats.
     static let imageExtensions: Set<String> = [
         "jpg", "jpeg", "png", "heic", "heif", "tif", "tiff", "gif", "bmp", "webp", "dng", "cr2", "cr3", "nef", "arw",
     ]
 
     /// True for iCloud "cloud-only" placeholders. Reading one would make macOS download it, so we never do.
+    ///
+    /// A "dataless" file (the `SF_DATALESS` flag) has its directory entry locally but no content. Callers skip
+    /// these, since opening them would start a download and use data and disk space.
     static func isCloudOnly(path: String) -> Bool {
         var st = stat()
         guard lstat(path, &st) == 0 else { return false }
         return (st.st_flags & 0x4000_0000) != 0   // SF_DATALESS
     }
 
+    /// Decodes a downscaled copy with the longest side at most `maxPixel`, applying the EXIF orientation.
+    /// Much cheaper than decoding the full image, and nothing is cached by ImageIO.
     static func thumbnail(path: String, maxPixel: Int) -> CGImage? {
         let url = URL(fileURLWithPath: path) as CFURL
         guard let src = CGImageSourceCreateWithURL(url, [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil }
@@ -27,6 +37,7 @@ enum Imaging {
         return CGImageSourceCreateThumbnailAtIndex(src, 0, options as CFDictionary)
     }
 
+    /// Reads the pixel dimensions from the file's metadata without decoding the image.
     static func pixelSize(path: String) -> (width: Int, height: Int)? {
         let url = URL(fileURLWithPath: path) as CFURL
         guard let src = CGImageSourceCreateWithURL(url, [kCGImageSourceShouldCache: false] as CFDictionary),
@@ -37,6 +48,10 @@ enum Imaging {
     }
 
     /// 64-bit difference hash: robust to resizing and recompression.
+    ///
+    /// Draws the image into a 9x8 greyscale grid and sets one bit per pixel for whether it is brighter than its right
+    /// neighbour. Near-identical images give hashes a few bits apart (small Hamming distance), which makes this a
+    /// fast first filter before the more expensive Vision feature prints.
     static func differenceHash(_ image: CGImage) -> UInt64 {
         let w = 9, h = 8
         var pixels = [UInt8](repeating: 0, count: w * h)
@@ -60,6 +75,8 @@ enum Imaging {
     }
 
     /// Variance of the Laplacian on a mid-size grayscale copy. Higher means sharper; blur drives it toward 0.
+    ///
+    /// Used as a quality signal when choosing which photo of a similar set to keep.
     static func sharpness(_ image: CGImage) -> Double {
         let w = 384
         let h = max(8, Int(Double(image.height) / Double(max(1, image.width)) * Double(w)))
@@ -86,6 +103,8 @@ enum Imaging {
     }
 
     /// Apple's own judgement of a photo: overall aesthetic score and how well any faces were captured.
+    ///
+    /// Both values come from Vision's async requests, so unlike the other Vision helpers this one is `async`.
     static func appleScores(_ image: CGImage) async -> (aesthetics: Double?, face: Double?, faceCount: Int) {
         var aesthetics: Double?
         // The model occasionally answers NaN (seen on some old JPEGs); treat that as "no opinion".
@@ -130,6 +149,8 @@ enum Imaging {
     }
 
     /// Apple's on-device image embedding. Distance between two prints is small for visually similar photos.
+    ///
+    /// Blocking, so it is run through `blockingParallelMap`.
     static func featurePrint(of image: CGImage) -> VNFeaturePrintObservation? {
         let request = VNGenerateImageFeaturePrintRequest()
         let handler = VNImageRequestHandler(cgImage: image, options: [:])

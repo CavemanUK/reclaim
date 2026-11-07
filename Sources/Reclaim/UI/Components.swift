@@ -1,5 +1,10 @@
+// Views and modifiers shared by every screen: the page margins (`Page`), cards, the header and stat tiles, the drive
+// ring and space bar, the Homebrew command box and sheet, and small helpers such as `safeFraction`. Keeping them
+// here is what makes the screens look alike.
+
 import SwiftUI
 
+/// Gives each space category the colour used wherever it appears (bar segments, rows, the map).
 extension SpaceCategory {
     var color: Color {
         switch self {
@@ -21,14 +26,21 @@ extension SpaceCategory {
     }
 }
 
+/// Fixed colours for the parts of the drive that are not file categories, so the bar reads the same everywhere.
 enum Palette {
+    /// The operating system volume.
     static let macOS = Color(white: 0.35)
+    /// Startup, recovery and other small system volumes.
     static let bootVolumes = Color(white: 0.5)
+    /// The "hidden" gap: space in use that no file accounts for.
     static let unexplained = Color(red: 0.95, green: 0.3, blue: 0.35)
+    /// Space macOS gives back by itself when it needs room.
     static let purgeable = Color.cyan.opacity(0.55)
+    /// Free space.
     static let free = Color.secondary.opacity(0.18)
 }
 
+/// One coloured slice of a `SpaceBar`; `label` appears in the hover tooltip.
 struct BarSegment: Identifiable {
     let id = UUID()
     let label: String
@@ -46,6 +58,7 @@ struct SpaceBar: View {
             let total = max(1, segments.reduce(Int64(0)) { $0 + $1.bytes })
             HStack(spacing: 1.5) {
                 ForEach(segments) { seg in
+                    // Any non-empty segment keeps a 2-point sliver, so small but real slices stay visible.
                     let w = max(seg.bytes > 0 ? 2 : 0, geo.size.width * CGFloat(seg.bytes) / CGFloat(total))
                     RoundedRectangle(cornerRadius: 3).fill(seg.color)
                         .frame(width: w)
@@ -58,6 +71,7 @@ struct SpaceBar: View {
     }
 }
 
+/// The rounded, lightly shadowed panel used for each block of content. Apply it with `.card()`.
 struct CardStyle: ViewModifier {
     func body(content: Content) -> some View {
         content
@@ -70,6 +84,7 @@ struct CardStyle: ViewModifier {
 }
 
 extension View {
+    /// Wraps the view in the standard card.
     func card() -> some View { modifier(CardStyle()) }
     /// Results that arrive after a search slide in rather than popping.
     func arrives() -> some View { transition(.opacity.combined(with: .move(edge: .bottom))) }
@@ -77,9 +92,13 @@ extension View {
 
 /// One set of page margins for every screen, so titles and cards line up when switching pages.
 enum Page {
+    /// Left and right (and bottom) margin of a page.
     static let inset: CGFloat = 30
+    /// Space above the header.
     static let top: CGFloat = 28
+    /// Widest the content column grows, so lines stay readable on large windows.
     static let maxWidth: CGFloat = 1000
+    /// Vertical gap between the blocks on a page.
     static let spacing: CGFloat = 20
 }
 
@@ -105,6 +124,7 @@ struct ScreenHeader: View {
     let title: String
     let subtitle: String
     let icon: String
+    /// Two colours for the icon tile's gradient.
     let colors: [Color]
 
     var body: some View {
@@ -148,7 +168,9 @@ struct DriveRing: View {
     let total: Int64
     var size: CGFloat = 132
 
+    /// Fraction of the drive in use, clamped to 0...1 so a bad figure can't break the arc.
     private var fraction: Double { safeFraction(Double(used), of: Double(total)) }
+    /// Cool colours normally, warming to orange above 75% full and red above 90%.
     private var colors: [Color] { fraction > 0.9 ? [.red, .orange] : (fraction > 0.75 ? [.orange, .yellow] : [.cyan, .purple]) }
 
     var body: some View {
@@ -170,6 +192,10 @@ struct DriveRing: View {
     }
 }
 
+/// A command shown as text with a Copy button, for things Reclaim will not do itself (anything needing `sudo`).
+///
+/// If `runnable` is given and Homebrew is installed it also offers Run, which opens the confirmation sheet rather
+/// than running anything directly.
 struct CommandBox: View {
     let command: String
     /// When set, Reclaim can run this itself (Homebrew only) after the user confirms.
@@ -195,6 +221,7 @@ struct CommandBox: View {
     }
 }
 
+// The state machine (confirming, running, finished) lives in `AppModel`; this view just reflects it.
 /// Confirms, runs and shows the output of a Homebrew command.
 struct BrewSheet: View {
     let command: BrewCommand
@@ -253,6 +280,7 @@ struct BrewSheet: View {
     }
 }
 
+/// The small coloured pill for a clean-up card's risk: green for safe, orange for review, red for the rest.
 struct RiskBadge: View {
     let risk: Risk
 
@@ -266,7 +294,9 @@ struct RiskBadge: View {
     }
 }
 
+/// Colours for files and folders on the Space Map and in lists.
 struct FileKind {
+    /// A folder gets a stable colour derived from its name (so it stays the same between redraws); a file gets one by type.
     static func color(for node: FileNode) -> Color {
         if node.isDirectory {
             var h: UInt64 = 1469598103934665603
@@ -308,6 +338,7 @@ func safeFraction(_ value: Double, of total: Double = 1) -> Double {
     return min(1, max(0, value / total))
 }
 
+/// "3 days ago" style text, or a dash when the date is unknown.
 func ageText(_ date: Date?) -> String {
     guard let date else { return "—" }
     return date.formatted(.relative(presentation: .named))

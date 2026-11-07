@@ -1,8 +1,13 @@
 import Foundation
 
+// Frees local disk space for iCloud-managed files by evicting the downloaded copy while iCloud keeps the
+// original. Unlike trashing, nothing goes to the Trash; the action is reversible by re-downloading,
+// which `ActionLog` records so the Undo screen can offer it.
+
 /// "Keep in iCloud only": remove the local copy of a file that iCloud already holds, the way Finder's
 /// Remove Download does. Nothing is deleted anywhere; opening the file downloads it again.
 enum CloudEvict {
+    /// What iCloud and the local disk currently hold for one item.
     struct Status: Sendable {
         let inCloud: Bool        // the item is managed by iCloud (iCloud Drive, or synced Desktop/Documents)
         let uploaded: Bool       // iCloud has the full content, so evicting is safe
@@ -10,10 +15,12 @@ enum CloudEvict {
         var canEvict: Bool { inCloud && uploaded && downloaded }
     }
 
+    /// Resource keys needed to answer `status(of:)` and to walk a folder.
     static let keys: Set<URLResourceKey> = [
         .isUbiquitousItemKey, .ubiquitousItemIsUploadedKey, .ubiquitousItemDownloadingStatusKey, .isDirectoryKey,
     ]
 
+    /// Reports whether `path` is in iCloud and whether evicting it is possible right now.
     static func status(of path: String) -> Status {
         let url = URL(fileURLWithPath: path)
         guard let v = try? url.resourceValues(forKeys: keys), v.isUbiquitousItem == true else {
@@ -27,6 +34,8 @@ enum CloudEvict {
         return Status(inCloud: true, uploaded: v.ubiquitousItemIsUploaded ?? false, downloaded: downloaded)
     }
 
+    /// Whether any file inside `dir` has a local copy. Gives up after 5000 entries and assumes yes, to keep
+    /// the check quick on very large folders.
     private static func hasLocalContent(_ dir: URL) -> Bool {
         guard let en = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles]) else { return false }
         var n = 0
@@ -46,6 +55,9 @@ enum CloudEvict {
     static func localBytes(of path: String) -> Int64 { AppInventory.allocatedSize(of: path) }
 
     /// Evicts one item. Folders are walked and each uploaded file evicted; files not yet uploaded are left alone.
+    /// The result is the bytes freed, the number of files skipped because iCloud had not finished uploading
+    /// them, and the first error encountered. A file is only ever evicted once `ubiquitousItemIsUploaded` is true,
+    /// so iCloud always holds the full content.
     static func evict(_ path: String) -> (freed: Int64, skipped: Int, error: String?) {
         let fm = FileManager.default
         let url = URL(fileURLWithPath: path)

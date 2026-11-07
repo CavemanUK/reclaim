@@ -1,6 +1,9 @@
 import Foundation
 import os
 
+// Runs the small set of Homebrew commands Reclaim offers, and only after the user has approved them.
+// `BrewCommand.parse` is the allow-list gate; `CommandRunner.runBrew` executes and streams the output.
+
 /// A command Reclaim may run for the user after they approve it. Only Homebrew: it manages its own packages,
 /// never needs sudo for the operations offered here, and prints what it does.
 struct BrewCommand: Identifiable, Equatable, Sendable {
@@ -9,11 +12,16 @@ struct BrewCommand: Identifiable, Equatable, Sendable {
     let title: String
     let explanation: String
 
+    /// The command as a user would type it, for showing and copying.
     var display: String { (["brew"] + arguments).joined(separator: " ") }
 
     /// Subcommands Reclaim is willing to run. Anything else only ever appears as text to copy.
     static let allowed: Set<String> = ["cleanup", "autoremove", "uninstall"]
 
+    /// Turns a suggested command line into a runnable `BrewCommand`, or returns nil if it is not allowed.
+    ///
+    /// Only `brew` followed by one of `allowed` is accepted, and every word may contain only letters, digits and
+    /// `-_.@+/`, so shell metacharacters can never get through. Anything after a `#` is dropped as a comment.
     static func parse(_ text: String, title: String, explanation: String) -> BrewCommand? {
         let line = text.split(separator: "#").first.map(String.init) ?? text
         let parts = line.split(separator: " ").map(String.init)
@@ -23,7 +31,9 @@ struct BrewCommand: Identifiable, Equatable, Sendable {
     }
 }
 
+/// Runs approved commands as child processes.
 enum CommandRunner {
+    /// Locates Homebrew for Apple Silicon or Intel Macs, or nil if it is not installed.
     static func brewPath() -> String? {
         ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"].first { FileManager.default.isExecutableFile(atPath: $0) }
     }
@@ -36,6 +46,7 @@ enum CommandRunner {
             process.executableURL = URL(fileURLWithPath: brew)
             process.arguments = arguments
             var env = ProcessInfo.processInfo.environment
+            // Keep brew non-interactive, colourless and quick: there is no terminal attached, and output is shown as plain text.
             env["HOMEBREW_NO_AUTO_UPDATE"] = "1"
             env["HOMEBREW_NO_ENV_HINTS"] = "1"
             env["HOMEBREW_COLOR"] = "0"
@@ -68,6 +79,8 @@ enum CommandRunner {
                 }
                 if let text, !text.isEmpty { onOutput(text) }
             }
+            // The readability handler and the termination handler run on different queues, so `drain` guards its
+            // buffer with a lock.
             pipe.fileHandleForReading.readabilityHandler = { handle in
                 let data = handle.availableData
                 if !data.isEmpty { drain(data, final: false) }
@@ -77,6 +90,7 @@ enum CommandRunner {
                 drain(pipe.fileHandleForReading.readDataToEndOfFile(), final: true)
                 continuation.resume(returning: p.terminationStatus)
             }
+            // If the process cannot start, `terminationHandler` never fires, so the continuation is resumed here instead.
             do {
                 try process.run()
             } catch {

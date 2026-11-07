@@ -1,10 +1,17 @@
 import Foundation
 
+// Turns the scanned `FileNode` tree into the clean-up suggestion cards on the Suggestions and Overview screens.
+// Most suggestions come from a fixed table of known locations (`InsightEngine.spots`); a few are found by
+// searching the tree (generated folders, old installers, biggest files, iCloud copies). It only reads the tree
+// and asks `SafetyPolicy` which items may be trashed; it never touches the file system itself.
+
+/// One file or folder offered within a suggestion.
 struct InsightItem: Identifiable, Hashable, Sendable {
     var id: String { path }
     let path: String
     let name: String
     let size: Int64
+    /// Extra detail shown beside the item, such as how long ago it was last changed.
     let note: String?
     /// True when the user may select this item for "Move to Trash" (passes the safety policy).
     let trashable: Bool
@@ -12,6 +19,7 @@ struct InsightItem: Identifiable, Hashable, Sendable {
     var evictable: Bool = false
 }
 
+/// The grouping used to colour and filter suggestions.
 enum InsightCategory: String, CaseIterable, Sendable {
     case caches = "Caches & logs"
     case developer = "Developer"
@@ -21,6 +29,7 @@ enum InsightCategory: String, CaseIterable, Sendable {
     case apps = "Apps & data"
 }
 
+/// One suggestion card: what it is, how risky, which items belong to it and what can be done about it.
 struct Insight: Identifiable, Sendable {
     let id: String
     let title: String
@@ -28,9 +37,14 @@ struct Insight: Identifiable, Sendable {
     let icon: String
     let category: InsightCategory
     let risk: Risk
+    /// The individual files or folders behind the suggestion.
     let items: [InsightItem]
+    /// Combined size of `items`, whether or not they can be acted on.
     let totalBytes: Int64
     /// A command the user may choose to run themselves. Reclaim never runs it.
+    ///
+    /// Reclaim runs it only when it is an allow-listed Homebrew command (see `BrewCommand`) and the user
+    /// approves; any other command is shown as text for the user to copy.
     let command: String?
     /// Plain-language advice for things Reclaim can't (or shouldn't) do itself.
     let advice: String?
@@ -41,7 +55,9 @@ struct Insight: Identifiable, Sendable {
     /// What selecting items on this card leads to: the Trash, or "keep in iCloud only".
     var action: Action = .trash
 
+    /// Items the safety policy allows to be moved to the Trash.
     var trashableItems: [InsightItem] { items.filter(\.trashable) }
+    /// Items the card's `action` can apply to.
     var actionableItems: [InsightItem] { action == .evict ? items.filter(\.evictable) : trashableItems }
     /// What the user could plausibly get back by acting on this suggestion. "Your biggest files" are the
     /// user's own videos and disk images, so they are listed for review but never promised as savings.
@@ -57,6 +73,7 @@ struct Insight: Identifiable, Sendable {
 /// Turns a scanned tree into plain-language suggestions. Pure analysis, no side effects.
 struct InsightEngine {
     let home: String
+    /// Used to decide, per item, whether it may be offered for trashing.
     let policy: SafetyPolicy
 
     init(home: String = NSHomeDirectory()) {
@@ -64,9 +81,13 @@ struct InsightEngine {
         self.policy = SafetyPolicy(home: home)
     }
 
+    /// How a known location becomes items: `children` offers each large child as a separate item that can be
+    /// trashed; `whole` shows the location as one item for information only (it is never offered for trashing).
     private enum Mode { case children, whole }
 
+    /// A known location, with the wording and thresholds for its suggestion card.
     private struct Spot {
+        /// Path relative to the home folder, or an absolute path if it starts with "/".
         let rel: String
         let id: String
         let title: String
@@ -77,11 +98,14 @@ struct InsightEngine {
         let mode: Mode
         var command: String? = nil
         var advice: String? = nil
+        /// In `children` mode, smaller children are ignored.
         var minChild: Int64 = 50 << 20
+        /// The location is ignored unless it is at least this large.
         var minTotal: Int64 = 100 << 20
         var partial: Bool = false
     }
 
+    /// The table of known locations. Ordering does not matter; results are sorted by size.
     private var spots: [Spot] {
         [
             Spot(rel: "Library/Caches", id: "caches", title: "App caches",
@@ -182,6 +206,7 @@ struct InsightEngine {
         ]
     }
 
+    /// Builds all suggestions for a scan, largest first.
     func generate(from root: FileNode, now: Date = Date()) -> [Insight] {
         var out: [Insight] = []
 
@@ -213,6 +238,7 @@ struct InsightEngine {
         return out.sorted { $0.totalBytes > $1.totalBytes }
     }
 
+    /// `canTrash` is false for locations that are listed for information only; otherwise the safety policy decides.
     private func makeItem(_ node: FileNode, canTrash: Bool, now: Date) -> InsightItem {
         var note: String?
         if let days = node.ageInDays(now: now), days > 30 { note = "Last changed \(days) days ago" }
@@ -231,6 +257,7 @@ struct InsightEngine {
             guard let node = root.node(at: home + "/" + folder) else { continue }
             candidates += node.children.filter { $0.size >= 100 << 20 }
         }
+        // Capped so checking each candidate's iCloud status stays quick.
         let items = candidates.prefix(60).compactMap { node -> InsightItem? in
             guard CloudEvict.status(of: node.path).canEvict else { return nil }
             var note = "In iCloud; local copy can go"
@@ -248,6 +275,8 @@ struct InsightEngine {
             action: .evict)
     }
 
+    /// Large rebuildable folders (`node_modules`, virtual environments and so on) found anywhere in the tree.
+    /// Folders directly in the home folder are excluded, and the walk does not descend into a match.
     private func generatedFolders(_ root: FileNode, now: Date) -> Insight? {
         let names: Set<String> = [
             "node_modules", ".venv", "venv", ".build", "Pods", ".next", ".nuxt", ".gradle", ".tox", "__pycache__",
@@ -279,6 +308,7 @@ struct InsightEngine {
             advice: "After removing one, run npm install, pip install -r requirements.txt, or your build command when you next need that project.")
     }
 
+    /// Installer and archive files in Downloads that are at least 30 days old.
     private func oldInstallers(_ root: FileNode, now: Date) -> Insight? {
         guard let downloads = root.node(at: home + "/Downloads") else { return nil }
         let exts: Set<String> = ["dmg", "pkg", "iso", "zip", "xip", "tar", "gz", "7z", "rar"]
@@ -293,6 +323,8 @@ struct InsightEngine {
             totalBytes: items.reduce(0) { $0 + $1.size }, command: nil, advice: nil)
     }
 
+    /// The 20 largest individual files over 500 MB, excluding locations that other cards already cover.
+    /// These are listed so the user can see them, but `Insight.potentialBytes` never counts them as savings.
     private func largestFiles(_ root: FileNode, now: Date) -> Insight? {
         let skip = [".ollama/models", "com.docker.docker", ".photoslibrary", "CoreSimulator", "Mobile Documents", "/Library/Mail"]
         var found: [FileNode] = []
@@ -312,6 +344,7 @@ struct InsightEngine {
             totalBytes: items.reduce(0) { $0 + $1.size }, command: nil, advice: nil)
     }
 
+    /// Large Photos libraries, shown for information only: they are managed by the Photos app.
     private func photosLibraries(_ root: FileNode) -> Insight? {
         var libs: [FileNode] = []
         root.walk { node in

@@ -1,22 +1,40 @@
 import Foundation
 
+// The single gatekeeper that decides whether a path may be moved to the Trash. Every trash request
+// (ActionLog.trash, the Insight/Space Map selection state, the uninstall flow) asks `SafetyPolicy` first,
+// so these rules hold regardless of what the UI or the user's selection says.
+
+/// The outcome of a safety check: either the path may be trashed, or it is refused with a reason
+/// that is safe to show to the user.
 enum TrashVerdict: Equatable, Sendable {
+    /// The path may be moved to the Trash.
     case allowed
+    /// The path is protected; the associated value explains why, in user-facing wording.
     case denied(String)
 
+    /// Convenience for call sites that only need a yes/no answer.
     var isAllowed: Bool { self == .allowed }
 }
 
 /// Hard guard rails. Even with user approval, Reclaim refuses to touch locations where removal
 /// can break the system, an app, a backup, or a library the user manages elsewhere (Photos, Music…).
 /// Reclaim only ever moves things to the Trash, never straight-deletes.
+///
+/// The check is cautious by design. Outside the home folder (and the contents of external drives) the answer is
+/// always "denied"; inside them, specific protected locations are refused and `~/Library` is an allow-list of
+/// cache, log, developer and device-backup folders only.
 struct SafetyPolicy: Sendable {
+    // MARK: - Properties and rule tables
+
+    /// The user's home folder with symlinks resolved, so comparisons against resolved paths are reliable.
     let home: String
 
+    /// - Parameter home: The home folder to protect. Injectable so tests can use a temporary directory.
     init(home: String = NSHomeDirectory()) {
         self.home = URL(fileURLWithPath: home).resolvingSymlinksInPath().path
     }
 
+    /// Top-level entries in the home folder that hold credentials or shell/tool configuration.
     private static let sensitiveDotDirs: Set<String> = [
         ".ssh", ".gnupg", ".aws", ".kube", ".config", ".docker", ".zshrc", ".zprofile", ".bash_profile", ".gitconfig",
     ]
@@ -26,6 +44,9 @@ struct SafetyPolicy: Sendable {
         ".photoslibrary", ".aplibrary", ".musiclibrary", ".tvlibrary", ".imovielibrary", ".fcpbundle",
     ]
 
+    /// The only parts of `~/Library` that may be trashed. `minComponents` counts path components from `Library`
+    /// (e.g. `Library/Caches/com.example.app` has 3), so the container folder itself cannot be chosen, only
+    /// entries inside it. Everything else in `~/Library` is denied.
     private static let libraryAllowed: [(prefix: String, minComponents: Int)] = [
         ("Library/Caches/", 3),
         ("Library/Logs/", 3),
@@ -52,8 +73,13 @@ struct SafetyPolicy: Sendable {
         "Library/Application Scripts", "Library/LaunchAgents", "Library/Preferences", "Library/Preferences/ByHost",
     ]
 
+    // MARK: - Verdicts
+
     /// Verdict while uninstalling `scope`'s app: the app bundle itself and its own leftovers are allowed,
     /// everything else follows the normal rules.
+    ///
+    /// - Important: This is deliberately narrower than "anything the app owns": a leftover is only allowed when
+    /// `LeftoverMatch` ties it to this app's bundle identifier or name, and only inside `uninstallFolders`.
     func verdict(forPath raw: String, uninstalling scope: UninstallScope) -> TrashVerdict {
         let path = URL(fileURLWithPath: raw).standardizedFileURL.path
         let appPath = URL(fileURLWithPath: scope.appPath).standardizedFileURL.path
@@ -72,12 +98,22 @@ struct SafetyPolicy: Sendable {
         return verdict(forPath: raw)
     }
 
+    /// Decides whether `raw` may be moved to the Trash under the normal (non-uninstall) rules.
+    ///
+    /// Anything outside the user's home folder and the contents of external drives is denied outright. Inside
+    /// those areas a list of protected locations is checked (managed libraries, Time Machine data, the Trash,
+    /// app bundles, `.git`, credentials, and the top level of the home folder or a drive), and `~/Library` is
+    /// an allow-list rather than a deny-list. Nothing here deletes anything: an allowed path is only ever
+    /// moved to the Trash, where it can be restored.
     func verdict(forPath raw: String) -> TrashVerdict {
         let url = URL(fileURLWithPath: raw).standardizedFileURL
+        // Resolve symlinks on the parent only, so the item keeps its own name: a symlink is judged as the link
+        // itself, not as whatever it points at.
         let parent = url.deletingLastPathComponent().resolvingSymlinksInPath()
         let path = parent.appendingPathComponent(url.lastPathComponent).path
         let components = path.split(separator: "/").map(String.init)
 
+        // Check every component, not just the last, so anything nested inside a protected container is also refused.
         for (index, part) in components.enumerated() {
             let lower = part.lowercased()
             if Self.managedLibrarySuffixes.contains(where: { lower.hasSuffix($0) }) {
@@ -97,6 +133,7 @@ struct SafetyPolicy: Sendable {
             }
         }
 
+        // Locations under the home folder: deny-list with an allow-list for Library.
         if path.hasPrefix(home + "/") {
             let rel = String(path.dropFirst(home.count + 1))
             let parts = rel.split(separator: "/").map(String.init)

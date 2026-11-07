@@ -1,6 +1,11 @@
 import CryptoKit
 import Foundation
 
+// Finds exact duplicate files (identical bytes) under chosen folders. It narrows candidates cheaply, by size
+// and then a partial hash, before paying for a full SHA-256, and never modifies anything. The Duplicates screen
+// shows the groups and sends the user's selection to `ActionLog` for trashing.
+
+/// One file that is a candidate duplicate.
 struct DupFile: Identifiable, Hashable, Sendable {
     var id: String { path }
     let path: String
@@ -10,6 +15,10 @@ struct DupFile: Identifiable, Hashable, Sendable {
     var name: String { (path as NSString).lastPathComponent }
 }
 
+/// Progress report for the Duplicates screen's progress panel.
+///
+/// `stage` is 1 (listing files), 2 (grouping by size), 3 (partial hashes) or 4 (full hashes); the other fields
+/// are filled in as they become known.
 struct DupProgress: Sendable {
     var stage: Int = 1
     var done: Int = 0
@@ -19,14 +28,18 @@ struct DupProgress: Sendable {
     var suspects: Int = 0
     var candidateBytes: Int64 = 0
     var currentPath: String = ""
+    /// Number of iCloud cloud-only files left out because reading them would download them.
     var skippedCloud: Int = 0
 }
 
+/// A set of files with identical content.
 struct DupGroup: Identifiable, Sendable {
     let id = UUID()
     let files: [DupFile]
+    /// Path of the copy the app recommends keeping (the best `keepScore`); the others are offered for trashing.
     let suggestedKeep: String
     var fileSize: Int64 { files.first?.size ?? 0 }
+    /// Space freed by trashing all but one copy.
     var reclaimable: Int64 { fileSize * Int64(files.count - 1) }
 }
 
@@ -35,10 +48,16 @@ struct DupGroup: Identifiable, Sendable {
 final class DuplicateFinder: @unchecked Sendable {
     let cancelFlag = CancelFlag()
 
+    /// Folder names whose contents are generated or managed by tools, so duplicates inside them are not offered.
     static let skipDirectoryNames: Set<String> = ["node_modules", ".git", "Pods", ".build", "DerivedData"]
 
     func cancel() { cancelFlag.cancel() }
 
+    /// Runs the four-stage search and returns groups sorted by how much space they would free.
+    ///
+    /// Each stage only keeps what could still be a duplicate: files must share a size, then a hash of their
+    /// first and last 16 KB, and finally a hash of the whole file. That avoids reading most large files in full.
+    /// Returns an empty array if cancelled.
     func find(
         roots: [URL], minSize: Int64, progress: @escaping @Sendable (DupProgress) -> Void
     ) async -> [DupGroup] {
@@ -46,6 +65,7 @@ final class DuplicateFinder: @unchecked Sendable {
         progress(DupProgress(stage: 1))
         let (files, seen, skipped) = await runBlocking { Self.enumerate(roots: roots, minSize: minSize, cancel: flag, progress: progress) }
         if flag.isCancelled { return [] }
+        // Re-wraps `progress` so every later report also carries the number of cloud-only files skipped during enumeration.
         let progress: @Sendable (DupProgress) -> Void = { p in
             var q = p
             q.skippedCloud = skipped
@@ -103,6 +123,10 @@ final class DuplicateFinder: @unchecked Sendable {
 
     // MARK: - Steps
 
+    /// Lists regular files of at least `minSize` bytes under `roots`.
+    ///
+    /// Cloud-only files are skipped because reading them would make macOS download them. Files that are the same
+    /// hard-linked inode are listed once, since deleting one link would not free any space.
     private static func enumerate(
         roots: [URL], minSize: Int64, cancel: CancelFlag, progress: @Sendable (DupProgress) -> Void
     ) -> (files: [DupFile], seen: Int, skipped: Int) {
@@ -146,6 +170,8 @@ final class DuplicateFinder: @unchecked Sendable {
         return (result, seen, skipped)
     }
 
+    /// A cheap fingerprint from the first and last 16 KB. Files of 32 KB or less contribute only their first 16 KB,
+    /// which is fine because candidates are confirmed with `fullHash` afterwards.
     private static func partialHash(path: String, size: Int64) -> String? {
         guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
         defer { try? handle.close() }
@@ -161,6 +187,7 @@ final class DuplicateFinder: @unchecked Sendable {
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
+    /// SHA-256 of the whole file, read in 1 MiB chunks so memory stays flat. Returns nil if cancelled or unreadable.
     static func fullHash(path: String, cancel: CancelFlag) -> String? {
         guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
         defer { try? handle.close() }
@@ -174,12 +201,15 @@ final class DuplicateFinder: @unchecked Sendable {
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
+    /// Lexicographic comparison of two score arrays (used to order `keepScore` results).
     static func lexLess(_ lhs: [Double], _ rhs: [Double]) -> Bool {
         for (a, b) in zip(lhs, rhs) where a != b { return a < b }
         return lhs.count < rhs.count
     }
 
     /// Lower is a better copy to keep: avoid Downloads/Trash/"copy" names, prefer the oldest original, shortest path.
+    ///
+    /// The result is `[penalty, creation date, path length]`, compared in that order by `lexLess`.
     static func keepScore(_ f: DupFile) -> [Double] {
         var penalty = 0.0
         let lower = f.path.lowercased()

@@ -14,7 +14,7 @@ Whole-disk scan with honest reconciliation against APFS · space map · plain-En
 
 2. **One-off admin elevation instead of a root helper (M).** The three things that need `sudo` on your Mac — thinning Time Machine snapshots, rebuilding the Spotlight index, erasing system logs — can be run through macOS's own administrator password dialog (`osascript … with administrator privileges`) with no daemon left behind. Reclaim would show the exact command, you'd confirm in Reclaim, then macOS asks for your password. Same shape as the Homebrew sheet. This is the honest middle ground between "copy this into Terminal" and a permanent root helper.
 
-3. **Space over time (M).** Save the category totals from every scan and show a trend: what grew since last week, which app's data is creeping up, how much each clean-up actually freed. One chart on My Mac, and "↑ 2.1 GB since last scan" badges on category rows. Turns the app from a one-off into something you glance at monthly.
+3. **Space over time — done.** The *Over time* screen keeps every whole-disk scan, charts free space, and compares any two scans by category and by folder, including how much Reclaim itself freed in between. A one-line trend sits on My Mac and in the written report. Possible follow-ups: category badges on My Mac, a menu-bar warning when free space drops, and notes when a folder has grown for several scans in a row.
 
 4. **A holding area instead of the Trash (L).** Items Reclaim removes go into its own dated folder and are deleted for good after 30 days unless restored — Photos' *Recently Deleted* model, for files. Space is only freed when the holding period ends or you choose "free now", but Undo becomes trivially reliable and nothing can be lost by emptying the Trash in Finder by habit. The Undo screen already has most of the UI.
 
@@ -58,6 +58,6 @@ Whole-disk scan with honest reconciliation against APFS · space map · plain-En
 
 ## Known rough edges to fix regardless
 
-- iCloud Desktop/Documents refuse `trashItem` for some files (NSCocoaError 513, no POSIX cause) even with Full Disk Access; the "Keep in iCloud only" feature is the likely way round it, and Finder's recycle path is the fallback to try next.
+- ~~iCloud Desktop/Documents refused `trashItem` (error 513)~~ Fixed: a file-coordinated move into `~/.Trash` is now used when the plain trash is refused.
 - Syncthing index growth (ignore patterns for `node_modules`, `.venv`, `.build`).
 - The report's "usage profile" is inferred from sizes and app usage; it should also learn from what you actually keep and remove.

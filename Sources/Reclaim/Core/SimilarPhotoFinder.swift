@@ -1,6 +1,12 @@
 import Foundation
 import Vision
 
+// The near-duplicate photo pipeline. `SimilarPhotoFinder.find` narrows candidates cheaply, confirms them with
+// a heavier model, removes exact copies (which belong to the Duplicates screen), and finally ranks each set so the
+// UI can suggest which photo to keep. It works on any `PhotoSource`, so folders and the Photos library share
+// the same code. It is read-only; trashing or deleting is done elsewhere after the user approves.
+
+/// Quality measurements for one photo, used to rank the photos in a set.
 struct PhotoScores: Hashable, Sendable {
     var aesthetics: Double?   // Apple, -1 ... 1
     var sharpness: Double     // Laplacian variance, higher is sharper
@@ -9,6 +15,7 @@ struct PhotoScores: Hashable, Sendable {
     var quality: Double       // combined 0 ... 1, relative within a set
 }
 
+/// A photo that has been fingerprinted and is being compared with others.
 struct PhotoInfo: Identifiable, Hashable, Sendable {
     var id: String { path }
     /// File path, or "photos://<id>" for a Photos library asset. Used as the selection key everywhere.
@@ -19,7 +26,9 @@ struct PhotoInfo: Identifiable, Hashable, Sendable {
     let height: Int
     let modified: Date?
     let created: Date?
+    /// 64-bit perceptual (difference) hash from `Imaging.differenceHash`. Zero where no hash was needed.
     let hash: UInt64
+    /// Filled in only after the set has been confirmed; nil if the image could not be read.
     var scores: PhotoScores?
     /// Byte-for-byte identical files folded into this photo. They are handled on the Duplicates screen.
     var exactCopies: [String] = []
@@ -51,6 +60,7 @@ struct PhotoInfo: Identifiable, Hashable, Sendable {
     }
 }
 
+/// A confirmed set of similar photos, ordered best-first, with a recommendation of which to keep.
 struct SimilarGroup: Identifiable, Sendable {
     let id = UUID()
     let photos: [PhotoInfo]
@@ -59,6 +69,7 @@ struct SimilarGroup: Identifiable, Sendable {
     var reasons: [String]
     /// Largest Vision distance between linked photos. Lower means more alike.
     let looseness: Float
+    /// Bytes freed by trashing everything except the suggested photo. Photos with unknown size count as 0.
     var reclaimable: Int64 {
         photos.filter { $0.path != suggestedKeep }.reduce(0) { $0 + $1.size }
     }
@@ -66,6 +77,8 @@ struct SimilarGroup: Identifiable, Sendable {
     var sizesUnknown: Bool { photos.contains { $0.size == 0 } }
 }
 
+/// Progress report for the Similar Photos screen. `stage` runs 1 (reading and hashing), 2 (finding
+/// candidate pairs), 3 (Vision confirmation) and 4 (choosing the best of each set).
 struct PhotoProgress: Sendable {
     var stage: Int = 1
     var done: Int = 0
@@ -77,15 +90,18 @@ struct PhotoProgress: Sendable {
     var skippedCloud: Int = 0   // iCloud-only photos left alone so nothing gets downloaded
 }
 
+/// How alike two photos must be to be grouped. Each level sets a limit for both filtering stages.
 enum Strictness: String, CaseIterable, Identifiable, Sendable {
     case strict = "Strict"
     case balanced = "Balanced"
     case loose = "Loose"
 
     var id: String { rawValue }
+    /// Largest number of differing bits between two perceptual hashes for a pair to become a candidate.
     var hammingLimit: Int {
         switch self { case .strict: 6; case .balanced: 10; case .loose: 14 }
     }
+    /// Largest Vision feature-print distance (lower is more alike) for a candidate pair to be confirmed.
     var visionLimit: Double {
         switch self { case .strict: 0.20; case .balanced: 0.40; case .loose: 0.60 }
     }
@@ -98,6 +114,8 @@ enum Strictness: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// Lets a `VNFeaturePrintObservation`, which is not declared `Sendable`, cross the thread boundary.
+/// Observations are never mutated after creation.
 private struct PrintBox: @unchecked Sendable {
     let observation: VNFeaturePrintObservation
 }
@@ -107,16 +125,30 @@ private struct PrintBox: @unchecked Sendable {
 /// 2. Apple's Vision feature print confirms each pair before it is shown.
 /// 3. Byte-identical copies are folded out (they belong to the Duplicates screen).
 /// 4. Apple's aesthetics and face-quality models, plus a sharpness check, pick the best of each set.
+///
+/// Why this shape: the perceptual hash is a few bits per photo and can be compared for every pair in memory
+/// quickly, but it can also match images that merely look alike at 9x8 pixels. The Vision feature print
+/// is a much better judge of similarity but slower to compute, so it is computed only for photos that
+/// already have a hash-level candidate. Pairs that pass both tests are linked, and linked photos form a set
+/// (so two photos in one set are connected through a chain, not necessarily directly alike). Byte-identical
+/// copies are folded out before scoring so the ranking compares genuinely different files.
 final class SimilarPhotoFinder: @unchecked Sendable {
     let cancelFlag = CancelFlag()
     func cancel() { cancelFlag.cancel() }
 
+    // MARK: - Pipeline
+
+    /// Searches photos in ordinary folders. Convenience wrapper around `find(source:strictness:progress:)`.
     func find(
         roots: [URL], strictness: Strictness, progress: @escaping @Sendable (PhotoProgress) -> Void
     ) async -> [SimilarGroup] {
         await find(source: FileSource(roots: roots), strictness: strictness, progress: progress)
     }
 
+    /// Runs the full pipeline on `source` and returns the sets of similar photos, largest saving first.
+    ///
+    /// The stages are numbered as in `PhotoProgress`. Returns an empty array if nothing similar is found or the
+    /// search is cancelled.
     func find(
         source: any PhotoSource, strictness: Strictness, progress: @escaping @Sendable (PhotoProgress) -> Void
     ) async -> [SimilarGroup] {
@@ -128,6 +160,7 @@ final class SimilarPhotoFinder: @unchecked Sendable {
             }
         }
         if flag.isCancelled || items.isEmpty { return [] }
+        // Adds the source's running count of skipped cloud-only photos to every progress report.
         let report: @Sendable (PhotoProgress) -> Void = { p in
             var q = p
             q.skippedCloud = source.skippedCloud
@@ -135,7 +168,8 @@ final class SimilarPhotoFinder: @unchecked Sendable {
         }
         report(PhotoProgress(stage: 1, done: 0, total: items.count, photosFound: items.count))
 
-        // Stage 1: fingerprint every photo (dedicated threads: image decoding blocks).
+        // Stage 1: fingerprint every photo. Image decoding (and, later, Vision) blocks its caller, so it runs through
+        // `blockingParallelMap` on a few dedicated threads inside `runBlocking`, not as tasks on Swift's cooperative pool.
         let infos = await runBlocking {
             blockingParallelMap(items, width: source.parallelism, cancel: flag, onProgress: { n in
                 if n % 20 == 0 || n == items.count {
@@ -144,6 +178,7 @@ final class SimilarPhotoFinder: @unchecked Sendable {
             }) { item -> PhotoInfo? in
                 guard let thumb = source.image(for: item, maxPixel: 128) else { return nil }
                 var fixed = item
+                // Some sources do not know the dimensions up front; take them from the decoded thumbnail.
                 if fixed.width == 0 || fixed.height == 0 {
                     fixed = PhotoItem(key: item.key, name: item.name, size: item.size, width: thumb.width, height: thumb.height,
                                       created: item.created, modified: item.modified)
@@ -162,6 +197,7 @@ final class SimilarPhotoFinder: @unchecked Sendable {
         if edges.isEmpty || flag.isCancelled { return [] }
 
         // Stage 3: confirm with Vision feature prints (only for photos that have a candidate).
+        // Only photos that have at least one hash-level candidate need the (slower) feature print.
         let involved = Array(Set(edges.flatMap { [$0.0, $0.1] })).sorted()
         report(PhotoProgress(stage: 3, total: involved.count, photosFound: photos.count, lookalikes: involved.count))
         let prints = await runBlocking {
@@ -181,12 +217,14 @@ final class SimilarPhotoFinder: @unchecked Sendable {
         for (i, box) in zip(involved, prints) { if let box = box ?? nil { printByIndex[i] = box } }
 
         let maxDistance = Float(strictness.visionLimit)
+        // Union-find over photo indices: each confirmed pair merges two photos into the same set.
         var parent = Array(0..<photos.count)
         func root(_ x: Int) -> Int {
             var x = x
             while parent[x] != x { parent[x] = parent[parent[x]]; x = parent[x] }
             return x
         }
+        // Remembers the largest confirmed distance per photo; the group's `looseness` is the maximum over its members.
         var worstByPhoto: [Int: Float] = [:]
         for (a, b) in edges {
             guard let pa = printByIndex[a], let pb = printByIndex[b] else { continue }
@@ -204,8 +242,8 @@ final class SimilarPhotoFinder: @unchecked Sendable {
         let rawSets = members.values.filter { $0.count > 1 }
         if rawSets.isEmpty { return [] }
 
-        // Fill in expensive details (real byte size for library photos) for set members only, then fold
-        // byte-identical copies into one representative.
+        // Fill in expensive details (real byte size for library photos) for set members only, because getting
+        // one means reading the original. Then fold byte-identical copies into one representative.
         let (detailed, folded) = await runBlocking { () -> ([PhotoInfo], (sets: [[Int]], exact: [Int: [String]])) in
             var filled = photos
             for i in rawSets.flatMap({ $0 }) {
@@ -225,6 +263,7 @@ final class SimilarPhotoFinder: @unchecked Sendable {
         // Stage 4: pick the best of each set.
         let toScore = sets.flatMap { $0 }
         report(PhotoProgress(stage: 4, total: toScore.count, photosFound: photos.count, lookalikes: involved.count, sets: sets.count))
+        // This stage uses Vision's async requests, so it runs on the cooperative pool with a small width of 4.
         let scored = await concurrentMapAsync(toScore.map { detailed[$0] }, width: 4, cancel: flag, onProgress: { n in
             if n % 5 == 0 || n == toScore.count {
                 report(PhotoProgress(stage: 4, done: n, total: toScore.count, photosFound: photos.count,
@@ -262,6 +301,7 @@ final class SimilarPhotoFinder: @unchecked Sendable {
         return groups.sorted { $0.reclaimable > $1.reclaimable }
     }
 
+    /// Converts back to the lightweight source-level type that `PhotoSource` methods take.
     private static func item(_ p: PhotoInfo) -> PhotoItem {
         PhotoItem(key: p.path, name: p.name, size: p.size, width: p.width, height: p.height, created: p.created, modified: p.modified)
     }
@@ -269,6 +309,9 @@ final class SimilarPhotoFinder: @unchecked Sendable {
     /// Within each set, groups photos of equal size and confirms identical content with `exactKey`.
     /// Returns the sets reduced to one representative per identical cluster (dropping sets left with one photo),
     /// plus the keys of the copies folded into each representative. Unknown sizes (0) are never treated as equal.
+    ///
+    /// A size of 0 means "unknown" (see `PhotoSource`), and unknown sizes are left alone because there is nothing
+    /// safe to compare. Exact-key checks (a file hash or the Photos original) run only for photos of identical size.
     static func foldExactCopies(
         sets: [[Int]], photos: [PhotoInfo], cancel: CancelFlag, exactKey: (PhotoItem) -> String?
     ) -> (sets: [[Int]], exact: [Int: [String]]) {
@@ -304,6 +347,14 @@ final class SimilarPhotoFinder: @unchecked Sendable {
 
     /// Orders a set best-first, blending resolution, sharpness, Apple's aesthetics score and face quality.
     /// Returns the ranked photos and plain-language reasons the first one won.
+    ///
+    /// Each score is normalised against the best in the set, so the quality number is only meaningful within one set.
+    /// Weights favour face quality when any photo has faces, otherwise sharpness and aesthetics. Resolution and
+    /// "detail" (bytes per pixel, i.e. how little the file is compressed) are blended in with lower weights.
+    /// Equal quality falls back to higher resolution, then the earliest creation date.
+    /// The reason shown when the top two photos score almost the same. The UI matches this text to style it as a tie.
+    static let tieReason = "Practically identical quality"
+
     static func rank(_ photos: inout [PhotoInfo]) -> ([PhotoInfo], [String]) {
         let maxPixels = Double(max(1, photos.map(\.pixels).max() ?? 1))
         let maxSharp = max(1e-6, photos.compactMap { $0.scores?.sharpness }.max() ?? 1)
@@ -321,13 +372,26 @@ final class SimilarPhotoFinder: @unchecked Sendable {
             let res = Double(photos[i].pixels) / maxPixels
             let sharp = s.sharpness / maxSharp
             let aes = ((s.aesthetics ?? 0) + 1) / 2
-            let detail = sizesKnown ? bpp(photos[i]) / maxBpp : res   // how little the file has been compressed
-            if anyFaces, let face = s.face {
-                s.quality = 0.30 * face + 0.22 * sharp + 0.22 * aes + 0.13 * res + 0.13 * detail
-            } else if anyFaces {
-                s.quality = 0.22 * sharp + 0.22 * aes + 0.13 * res + 0.13 * detail
+            if sizesKnown {
+                // Bytes per pixel is a proxy for how little the file has been compressed.
+                let detail = bpp(photos[i]) / maxBpp
+                if anyFaces, let face = s.face {
+                    s.quality = 0.30 * face + 0.22 * sharp + 0.22 * aes + 0.13 * res + 0.13 * detail
+                } else if anyFaces {
+                    s.quality = 0.22 * sharp + 0.22 * aes + 0.13 * res + 0.13 * detail
+                } else {
+                    s.quality = 0.28 * sharp + 0.28 * aes + 0.20 * res + 0.24 * detail
+                }
             } else {
-                s.quality = 0.28 * sharp + 0.28 * aes + 0.20 * res + 0.24 * detail
+                // Some library photos have no known byte size (the original is in iCloud). Leave "detail" out and
+                // spread its weight over the other signals; substituting resolution for it would count resolution twice.
+                if anyFaces, let face = s.face {
+                    s.quality = 0.35 * face + 0.25 * sharp + 0.25 * aes + 0.15 * res
+                } else if anyFaces {
+                    s.quality = 0.25 * sharp + 0.25 * aes + 0.15 * res
+                } else {
+                    s.quality = 0.40 * sharp + 0.35 * aes + 0.25 * res
+                }
             }
             if !s.quality.isFinite { s.quality = 0 }
             photos[i].scores = s
@@ -351,12 +415,14 @@ final class SimilarPhotoFinder: @unchecked Sendable {
             }
             if reasons.isEmpty {
                 let gap = (best.scores?.quality ?? 0) - (photos[1].scores?.quality ?? 0)
-                reasons.append(gap < 0.03 ? "Practically identical quality" : "Best overall")
+                reasons.append(gap < 0.03 ? Self.tieReason : "Best overall")
             }
         }
         return (photos, reasons)
     }
 
+    /// Compares every pair of hashes and returns the pairs within `limit` differing bits. This is quadratic in the
+    /// number of photos, so it is split into chunks across threads and capped at 3 million pairs to bound memory.
     private static func candidateEdges(hashes: [UInt64], limit: Int) -> [(Int, Int)] {
         let n = hashes.count
         let lock = NSLock()

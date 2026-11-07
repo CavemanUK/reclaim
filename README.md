@@ -5,7 +5,7 @@ A free, open-source disk clean-up app for macOS that explains where your space w
 Reclaim is built on two rules:
 
 - **It only looks until you say otherwise.** Nothing is removed without your approval.
-- **Anything Reclaim removes is recoverable.** Files go to the Trash, photos go to Photos' Recently Deleted, local copies of iCloud files can be downloaded again, and the Undo screen can put things back. (The one exception is Homebrew, below.)
+- **Anything Reclaim removes is recoverable.** Files go to the Trash, photos go to Photos' Recently Deleted, local copies of iCloud files can be downloaded again, and the Undo screen can put things back. Two things are deliberately not undoable: Homebrew commands you choose to run (Homebrew's own operations, below), and the **Delete permanently…** button on the Undo screen, which removes only items Reclaim itself moved to the Trash, after a confirmation.
 
 Nothing leaves your Mac. Reclaim's own code makes no network requests and has no third-party dependencies. The written report uses Apple's on-device language model, which never sees file contents, only names and sizes.
 
@@ -15,6 +15,7 @@ Nothing leaves your Mac. Reclaim's own code makes no network requests and has no
 |---|---|
 | **My Mac** | Whole-disk scan reconciled against APFS, so the totals match what macOS reports. Categories, purgeable space, Time Machine snapshots, and a written report. |
 | **What's big** | An interactive space map of everything on the drive, or of any folder or external drive you choose. |
+| **Over time** | Every whole-disk scan is remembered, with a free-space chart and a comparison: which categories and folders grew or shrank since the previous scan, a week ago, or the first scan, and how much Reclaim itself freed in between. Stored only on your Mac, with a Clear history button. |
 | **Clean up** | Plain-English suggestions with risk labels: caches, old downloads, developer leftovers, device backups, Homebrew packages nothing needs any more, and "Keep in iCloud only" for files already safe in iCloud (frees the local copy without deleting anything). |
 | **Duplicates** | Exact duplicate files, hashed, with the best copy to keep suggested. Nothing is marked for removal until you choose. |
 | **Similar photos** | Near-identical photos in folders or in your Photos library, scored for sharpness and composition so the best shot is suggested. |
@@ -69,23 +70,26 @@ RECLAIM_DEV=1 ~/Applications/Reclaim.app/Contents/MacOS/Reclaim --scan ~/Picture
 
 ## How it stays safe
 
-- `SafetyPolicy` is a deny-by-default allow-list. Your home folder, Documents, Library, Photos libraries, Music and iMovie libraries, `.ssh`, `.git` directories and the Trash itself are never offered for removal.
+- `SafetyPolicy` refuses everything outside your home folder and mounted drives. Inside them it protects named places: your home folder and its top-level folders (Documents, Desktop…), `.ssh` and other credentials, `.git` directories, app bundles, Photos, Music, iMovie and Final Cut libraries, Time Machine data, and the Trash itself. `~/Library` is the other way round: only caches, logs, developer folders and device backups are allowed, and everything else there is refused.
 - Top-level folders on external drives are protected; you have to open the folder and choose what is inside.
 - App leftovers are matched by exact bundle identifier, so uninstalling Chrome does not touch Chrome Canary's data.
 - Every move is recorded in the action log (`~/Library/Application Support/Reclaim/history.json`) and in the unified log under the `actions` category.
+- The Over time history (`trend.json`, same folder) holds only totals, per-category sizes and the names and sizes of your largest folders. It never leaves your Mac and can be cleared from the Over time screen.
 - Files stored only in iCloud are skipped rather than downloaded.
 
 ## Project layout
 
 ```
 Sources/Reclaim/
-  Core/        scanning, classification, duplicate and photo analysis, safety policy, action log
+  Core/        scanning, classification, duplicate and photo analysis, safety policy, action log, scan history
   UI/          SwiftUI screens
   AppModel.swift, ReclaimApp.swift
 Tests/ReclaimTests/
 scripts/       build, install, test, icon generation, entitlements
-docs/          feature ideas and roadmap
+docs/          ARCHITECTURE.md (how it fits together), FEATURE-IDEAS.md (roadmap)
 ```
+
+New to the code? Start with [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): it explains the data flow, the safety model, the concurrency helpers, and how to add a suggestion, a screen or a safety rule.
 
 ## How it was made
 
@@ -93,7 +97,7 @@ Reclaim was written with AI assistance: the code was produced by Anthropic's Cla
 
 ## Contributing
 
-Issues and pull requests are welcome. Please keep to the two rules at the top: no removal without approval, and nothing unrecoverable.
+Issues and pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) and keep to the two rules at the top: no removal without approval, and nothing unrecoverable.
 
 ## Licence
 

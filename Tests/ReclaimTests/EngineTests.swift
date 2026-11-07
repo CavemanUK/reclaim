@@ -150,13 +150,27 @@ private func randomBytes(_ n: Int, seed: UInt64) -> [UInt8] {
         #expect(reasons.contains("Sharpest"))
     }
 
+    @Test func unknownSizesDoNotDoubleCountResolution() {
+        // Two photos with no byte size: identical sharpness and composition, but one has twice the pixels.
+        // Resolution is then the only difference, so the bigger one must win by exactly resolution's own weight
+        // (0.25 of the relative gap), not by a doubled one.
+        var set = [
+            photo("small.jpg", pixels: 1000, size: 0, sharp: 100, aes: 0.2),
+            photo("big.jpg", pixels: 2000, size: 0, sharp: 100, aes: 0.2),
+        ]
+        let (ranked, _) = SimilarPhotoFinder.rank(&set)
+        #expect(ranked.first?.name == "big.jpg")
+        let gap = (ranked[0].scores?.quality ?? 0) - (ranked[1].scores?.quality ?? 0)
+        #expect(abs(gap - 0.25 * 0.5) < 1e-9)
+    }
+
     @Test func nearTiesAreCalledTies() {
         var set = [
             photo("a.jpg", pixels: 2000, size: 200_000, sharp: 100, aes: 0.40),
             photo("b.jpg", pixels: 2000, size: 199_000, sharp: 101, aes: 0.39),
         ]
         let (_, reasons) = SimilarPhotoFinder.rank(&set)
-        #expect(reasons == ["Practically identical quality"])
+        #expect(reasons == [SimilarPhotoFinder.tieReason])
     }
 
     @Test func nanScoresAreNeutralised() {

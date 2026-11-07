@@ -1,5 +1,10 @@
 import Foundation
 
+// Describes where the disk space has gone. `SpaceClassifier` assigns every scanned byte to one `SpaceCategory`,
+// and `SpaceReport` combines that with APFS and snapshot figures so the Overview can also account for space the
+// file scan cannot see.
+
+/// A plain-language bucket for disk usage, such as "Caches & logs" or "Developer tools".
 enum SpaceCategory: String, CaseIterable, Identifiable, Sendable {
     case apps = "Applications"
     case yourFiles = "Your files"
@@ -18,6 +23,7 @@ enum SpaceCategory: String, CaseIterable, Identifiable, Sendable {
 
     var id: String { rawValue }
 
+    /// SF Symbol name for the category.
     var icon: String {
         switch self {
         case .apps: "app.dashed"
@@ -57,6 +63,7 @@ enum SpaceCategory: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    /// Advice on how the user can free space in this category.
     var howToReduce: String {
         switch self {
         case .apps: "Delete apps you don't use by dragging them to the Trash from Applications."
@@ -77,12 +84,14 @@ enum SpaceCategory: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// One large folder that makes up part of a category's total.
 struct Contributor: Identifiable, Sendable {
     var id: String { path }
     let path: String
     let size: Int64
 }
 
+/// A category with its byte total and its largest contributing folders.
 struct CategoryTotal: Identifiable, Sendable {
     var id: SpaceCategory { category }
     let category: SpaceCategory
@@ -96,11 +105,16 @@ struct SpaceReport: Sendable {
     let container: APFSContainerInfo
     let snapshots: [LocalSnapshot]
     let categories: [CategoryTotal]
+    /// Total bytes the file scan counted.
     let scannedBytes: Int64
+    /// Folders the scan could not open, so their contents are missing from the figures.
     let unreadable: [String]
+    /// Space macOS reports it can reclaim by itself.
     let purgeable: Int64
+    /// False when only a folder was scanned; the gap figures only make sense for a whole-disk scan.
     let scannedWholeDisk: Bool
 
+    /// Bytes the Data volume reports using.
     var dataUsed: Int64 { container.dataVolume?.inUse ?? 0 }
     /// Space the Data volume says it uses but that the file scan could not find as files.
     var unexplained: Int64 { max(0, dataUsed - scannedBytes) }
@@ -110,12 +124,16 @@ struct SpaceReport: Sendable {
     var unexplainedRemainder: Int64 { max(0, unexplained - purgeableInGap) }
     /// Negative gap: scan counted more than the volume reports (cloned files / hard links).
     var overCount: Int64 { max(0, scannedBytes - dataUsed) }
+    /// Bytes used by the other volumes in the container (macOS itself, VM, Preboot, Recovery).
     var otherVolumesBytes: Int64 {
         container.volumes.filter { !$0.roles.contains("Data") }.reduce(0) { $0 + $1.inUse }
     }
 }
 
+/// Rules for sorting paths into categories.
 enum SpaceClassifier {
+    /// The category for one path. Rules are checked in order and the first match wins, so the more specific
+    /// locations (Photos libraries, Trash, Ollama, device backups) come before the broad ones (`/Library`, home).
     static func category(forPath path: String, home: String) -> SpaceCategory {
         func has(_ prefix: String) -> Bool { path == prefix || path.hasPrefix(prefix + "/") }
 
@@ -149,6 +167,11 @@ enum SpaceClassifier {
     }
 
     /// Attributes every byte in the scanned tree to exactly one category.
+    ///
+    /// Each node contributes only its own bytes (its size minus its children's), so a folder is never counted
+    /// together with what is inside it. Folders of at least 100 MB are recorded as "contributors" for display,
+    /// unless they merely wrap a single dominant child of the same category; the contributors of a category are
+    /// the 12 largest.
     static func breakdown(root: FileNode, home: String) -> [CategoryTotal] {
         var totals: [SpaceCategory: Int64] = [:]
         var found: [SpaceCategory: [Contributor]] = [:]

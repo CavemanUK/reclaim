@@ -1,9 +1,18 @@
+// The "My Mac" screen: the first thing the user sees. Before a scan it offers the scan and shows the drive; after one
+// it shows how much can be reclaimed, a bar of where the space is, the written report, the biggest wins, a
+// per-category breakdown, and an explanation of the "hidden" gap. It reads `AppModel` and starts scans through it.
+// The smaller views below (steps, access guide, report card, rows, gap card, flow layout) exist only for this screen.
+
 import SwiftUI
 
+/// The Overview screen. Which hero is shown depends on state: scanning, results of a whole-disk scan, results of a
+/// folder scan (no drive-level figures), or the welcome hero before any scan.
 struct OverviewView: View {
     @Environment(AppModel.self) private var model
 
+    /// Size of the drive: the APFS container's capacity (shared by all its volumes) when known, else the volume's.
     private var total: Int64 { model.container?.ceiling ?? model.volume.total }
+    /// Free space, from the same source as `total` so the two always agree.
     private var free: Int64 { model.container?.free ?? model.volume.available }
 
     var body: some View {
@@ -32,6 +41,7 @@ struct OverviewView: View {
 
     // MARK: Heroes
 
+    /// Shown before any scan: the drive's current state, the Scan button, and a menu to choose what to scan.
     private var welcomeHero: some View {
         VStack(spacing: 18) {
             if model.container != nil {
@@ -92,6 +102,7 @@ struct OverviewView: View {
         .disabled(model.isScanning)
     }
 
+    /// One entry of the target menu; the current choice is marked with a tick.
     private func targetButton(_ target: ScanTarget) -> some View {
         Button {
             model.target = target
@@ -104,6 +115,7 @@ struct OverviewView: View {
         }
     }
 
+    /// Shown while scanning: live counts from `model.progress`, and a Stop button.
     private var scanningHero: some View {
         VStack(spacing: 14) {
             ProgressView().controlSize(.large)
@@ -121,7 +133,10 @@ struct OverviewView: View {
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 20))
     }
 
+    /// Shown after a whole-disk scan: free space, how much the clean-up cards could free, the drive bar and legend,
+    /// and the three-step progress marker.
     private func resultsHero(_ report: SpaceReport) -> some View {
+        // `potentialBytes` is what could plausibly be got back; it leaves out careful cards and the user's own large media.
         let wins = model.insights.reduce(Int64(0)) { $0 + $1.potentialBytes }
         return VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top, spacing: 22) {
@@ -157,6 +172,7 @@ struct OverviewView: View {
             }
             SpaceBar(segments: segments, height: 34)
             legend
+            trendChip
             StepsView(current: wins > 0 ? 2 : 3)
         }
         .padding(24)
@@ -164,6 +180,25 @@ struct OverviewView: View {
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 20))
     }
 
+    /// One line comparing this scan with the previous one, linking to the Over time screen.
+    @ViewBuilder
+    private var trendChip: some View {
+        if let c = model.comparison(.previous) {
+            let grew = c.usedChange >= 0
+            Button { model.selection = .overTime } label: {
+                Label(
+                    "\(ByteFormat.string(abs(c.usedChange))) \(grew ? "more" : "less") used than your last scan \(Int(c.days.rounded())) day\(Int(c.days.rounded()) == 1 ? "" : "s") ago",
+                    systemImage: grew ? "arrow.up.right" : "arrow.down.right")
+                    .font(.callout)
+                    .foregroundStyle(grew ? Color.orange : Color.teal)
+            }
+            .buttonStyle(.plain)
+            .help("See what changed")
+        }
+    }
+
+    /// Shown after a scan of a folder or drive. Drive-level figures (free space, the hidden gap) would be meaningless
+    /// for part of a disk, so this shows only what was found inside it.
     private func folderHero(_ report: SpaceReport) -> some View {
         let wins = model.insights.reduce(Int64(0)) { $0 + $1.potentialBytes }
         let name = model.scannedTarget?.title ?? "this folder"
@@ -194,6 +229,8 @@ struct OverviewView: View {
 
     // MARK: Bar + legend
 
+    /// The slices of the drive bar, in drawing order: macOS, startup volumes, then (after a scan) each category, space
+    /// macOS frees by itself and the hidden gap, or (before a scan) one lump for everything else; free space comes last.
     private var segments: [BarSegment] {
         var out: [BarSegment] = []
         let c = model.container
@@ -213,6 +250,7 @@ struct OverviewView: View {
         return out
     }
 
+    /// A key for the bar. Slices under 1/40 of the drive are left out so the key stays readable.
     private var legend: some View {
         let big = segments.filter { $0.bytes > total / 40 }
         return FlowLayout(spacing: 14) {
@@ -227,6 +265,8 @@ struct OverviewView: View {
 
     // MARK: Breakdown
 
+    /// The list under the hero. A whole-disk scan shows system volumes and every category; a home-folder scan shows the
+    /// categories; any other folder shows its biggest children. Before a scan it shows only the Data volume's total.
     private var breakdown: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(model.report?.scannedWholeDisk == false ? "What's inside" : "Where your space is").font(.title2.bold())
@@ -271,6 +311,7 @@ struct OverviewView: View {
         }
     }
 
+    /// A plain-English name for a system volume, by its APFS role.
     static func volumeTitle(_ v: APFSVolume) -> String {
         switch v.role {
         case "Preboot": "Startup files"
@@ -281,6 +322,7 @@ struct OverviewView: View {
         }
     }
 
+    /// Explains what a system volume is for and whether it can be reduced.
     static func volumeText(_ v: APFSVolume) -> String {
         switch v.role {
         case "Preboot":
@@ -299,6 +341,7 @@ struct OverviewView: View {
 
 // MARK: - The three steps
 
+/// The Scan, Review, Approve markers. `current` is the step in progress (1 to 3); earlier steps show a tick.
 struct StepsView: View {
     let current: Int
 
@@ -333,6 +376,9 @@ struct StepsView: View {
 
 // MARK: - Guide for Full Disk Access
 
+/// Walks the user through granting Full Disk Access, shown while `AppModel.fullDiskAccess` is false.
+///
+/// Without it macOS hides some folders from Reclaim, which inflates the "hidden" figure and makes some clean-ups fail.
 struct AccessGuide: View {
     @Environment(AppModel.self) private var model
 
@@ -368,6 +414,8 @@ struct AccessGuide: View {
 
 // MARK: - Written report
 
+/// The written-report panel. Shows a button, then the report with a line saying whether Apple Intelligence or
+/// Reclaim's built-in writer produced it (and why, if built-in).
 struct ReportCard: View {
     @Environment(AppModel.self) private var model
 
@@ -442,6 +490,7 @@ struct ReportText: View {
 
 // MARK: - Start here
 
+/// The three clean-up cards with the most Reclaim can remove, linking to the Clean up screen to review them.
 struct StartHereCard: View {
     @Environment(AppModel.self) private var model
 
@@ -474,6 +523,8 @@ struct StartHereCard: View {
 
 // MARK: - Rows (lightweight, live inside one shared card)
 
+/// A row for a non-category part of the drive (macOS, a system volume, purgeable space): icon, size, a bar relative to
+/// `total`, and a sentence on what it is. Rows are light so many can sit inside one shared card.
 struct InfoRow: View {
     let color: Color
     let icon: String
@@ -499,6 +550,8 @@ struct InfoRow: View {
     }
 }
 
+/// A row for one space category. Tapping expands it to show how to reduce it and its biggest items, each with a
+/// Show in Finder button. `drive` is the figure the bar is measured against.
 struct CategoryRow: View {
     let total: CategoryTotal
     let drive: Int64
@@ -558,6 +611,7 @@ struct CategoryRow: View {
     }
 }
 
+/// A row for one child of a scanned folder, used after a folder scan; `total` is the folder's size.
 struct FolderChildRow: View {
     let node: FileNode
     let total: Int64
@@ -584,6 +638,8 @@ struct FolderChildRow: View {
 
 // MARK: - The gap
 
+/// Explains the "hidden" gap: space macOS reports in use that Reclaim could not see as files. Expands to list the usual
+/// reasons (snapshots, purgeable space, folders that couldn't be opened). Whole-disk scans only.
 struct GapCard: View {
     let report: SpaceReport
     @Environment(AppModel.self) private var model
@@ -651,6 +707,7 @@ struct GapCard: View {
         }
     }
 
+    /// One explained cause in the gap card.
     private func reason(_ icon: String, _ title: String, _ text: String) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: icon).frame(width: 22).foregroundStyle(.secondary)
@@ -668,6 +725,8 @@ struct UnreadableList: View {
     @Environment(AppModel.self) private var model
     @State private var expanded = false
 
+    /// Unreadable paths grouped by their top-level place (two path components, or three under /Users), largest group
+    /// first.
     private var groups: [(top: String, paths: [String])] {
         var byTop: [String: [String]] = [:]
         for p in paths {
@@ -720,9 +779,11 @@ struct UnreadableList: View {
 
 // MARK: - Wrapping layout for the legend
 
+/// Lays out its children left to right and wraps to a new row when the width runs out. Used for the bar's legend.
 struct FlowLayout: Layout {
     var spacing: CGFloat = 8
 
+    /// Measures rows the same way `placeSubviews` places them, so the reported height matches the layout.
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let width = proposal.width ?? .infinity
         var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0

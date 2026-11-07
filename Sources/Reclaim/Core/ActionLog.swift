@@ -2,10 +2,21 @@ import AppKit
 import Foundation
 import os
 
+// The only file in the app that changes the user's files. It moves approved items to the Trash (after a
+// `SafetyPolicy` check), evicts iCloud copies, records every action in a JSON history so it can be undone,
+// and can restore items or empty the ones Reclaim itself trashed.
+
+/// Shared logger for everything that touches the file system, so actions can be audited in Console.app.
 let actionLogger = Logger(subsystem: "com.craigarmitage.reclaim", category: "actions")
 
+// MARK: - History record
+/// One recorded action, persisted in `history.json` so the Undo screen survives restarts.
 struct HistoryEntry: Codable, Identifiable, Hashable, Sendable {
+    /// Where an entry currently stands. Entries start as `trashed`, `evicted` or `photosRecentlyDeleted`
+    /// and move to `restored` or `deleted` as the user (or Finder) acts later.
     enum Status: String, Codable, Sendable {
+        /// `trashed`: in the Trash and restorable. `restored`: back in place. `deleted`: gone from the Trash,
+        /// either purged by Reclaim or emptied in Finder.
         case trashed, restored, deleted
         /// Deleted through the Photos app: recoverable from Photos › Recently Deleted for about 30 days.
         case photosRecentlyDeleted
@@ -15,13 +26,19 @@ struct HistoryEntry: Codable, Identifiable, Hashable, Sendable {
 
     var id: UUID
     var date: Date
+    /// Where the item lived before. For Photos entries this is the item's key rather than a file path.
     var originalPath: String
+    /// Where macOS put the item in the Trash, when known. Needed to restore it later.
     var trashPath: String?
+    /// Bytes freed, or expected to be freed, by the action.
     var size: Int64
+    /// Short explanation shown in the history list, e.g. the suggestion that led to the action.
     var reason: String
     var status: Status
 }
 
+// MARK: - Failures
+/// An item that could not be trashed or evicted, with a message suitable for showing to the user.
 struct TrashFailure: Sendable {
     let path: String
     let message: String
@@ -34,6 +51,8 @@ struct TrashFailure: Sendable {
         self.isPermission = isPermission
     }
 
+    /// Builds a failure from a thrown error, looking through underlying errors to see whether the cause
+    /// was a permission problem (which unlocks the fallback paths in `ActionLog.trash`).
     static func from(_ error: Error, path: String) -> TrashFailure {
         let ns = error as NSError
         var permission = false
@@ -56,15 +75,22 @@ struct TrashFailure: Sendable {
 
 /// The only place that changes the file system. Everything goes through the Trash first and is
 /// recorded so it can be undone. Permanent deletion is limited to items Reclaim itself trashed.
+///
+/// All mutable state is guarded by `lock`, and `save()` writes a snapshot taken under the lock.
 final class ActionLog: @unchecked Sendable {
     private let lock = NSLock()
     private var store: [HistoryEntry] = []
+    /// Location of `history.json`, in Application Support unless a test supplies another.
     private let fileURL: URL
+    /// Consulted before every trash operation; nothing is trashed without an `.allowed` verdict.
     private let policy: SafetyPolicy
     /// Where a trashed item may legitimately live: the main Trash, the iCloud Trash (Desktop and Documents sync
     /// to iCloud), or an external drive's own Trash.
     private let trashRoots: [String]
 
+    /// - Parameters:
+    ///   - fileURL: Overrides the history location; used by tests.
+    ///   - policy: The safety policy to enforce.
     init(fileURL: URL? = nil, policy: SafetyPolicy = SafetyPolicy()) {
         let base =
             fileURL
@@ -77,6 +103,7 @@ final class ActionLog: @unchecked Sendable {
         load()
     }
 
+    /// All recorded actions, newest first.
     var entries: [HistoryEntry] {
         lock.lock(); defer { lock.unlock() }
         return store.sorted { $0.date > $1.date }
@@ -102,6 +129,8 @@ final class ActionLog: @unchecked Sendable {
         lock.unlock()
         if changed { save() }
     }
+
+    // MARK: - Photos and iCloud
 
     /// Records photos that Photos itself has just moved to Recently Deleted. Reclaim cannot put these back;
     /// the Photos app can, for about 30 days.
@@ -164,6 +193,14 @@ final class ActionLog: @unchecked Sendable {
         return nil
     }
 
+    // MARK: - Trashing and restoring
+
+    /// Moves each item to the Trash and records it. Never deletes outright.
+    ///
+    /// Every path is checked against `SafetyPolicy` first (with the narrower uninstall rules when `scope` is
+    /// given); denied or missing items are reported in `failed` and left alone. If the normal Trash call is refused
+    /// for permission reasons, fallbacks are tried in turn (a file-coordinated move, then the system recycle
+    /// call, then Finder for the app bundle itself). Each fallback still ends with the item in the Trash.
     func trash(
         _ items: [(path: String, size: Int64)], reason: String, uninstalling scope: UninstallScope? = nil
     ) -> (done: [HistoryEntry], failed: [TrashFailure]) {
@@ -190,6 +227,7 @@ final class ActionLog: @unchecked Sendable {
                     id: UUID(), date: Date(), originalPath: item.path, trashPath: trashPath,
                     size: item.size, reason: reason, status: .trashed))
             } catch {
+                // Only permission-type failures trigger the fallbacks below; other errors are reported as they are.
                 let first = TrashFailure.from(error, path: item.path)
                 // Second attempt: a coordinated move into ~/.Trash. Plain trashItem is refused (error 513) for
                 // iCloud-synced files another app created; the coordinated move is accepted and is just as recoverable.
@@ -293,6 +331,8 @@ final class ActionLog: @unchecked Sendable {
         return moved
     }
 
+    /// Moves a trashed item back to its original location and marks it `restored`. Returns an error message,
+    /// or nil on success.
     func restore(_ id: UUID) -> String? {
         lock.lock()
         guard let index = store.firstIndex(where: { $0.id == id }), store[index].status == .trashed else {
@@ -332,6 +372,8 @@ final class ActionLog: @unchecked Sendable {
         return nil
     }
 
+    // MARK: - Purging
+
     /// True when `path` is inside a location Reclaim recognises as a Trash.
     func isInsideTrash(_ path: String) -> Bool {
         guard !path.contains("/../") else { return false }
@@ -340,6 +382,9 @@ final class ActionLog: @unchecked Sendable {
     }
 
     /// Permanently deletes items Reclaim previously moved to the Trash. Anything else in the Trash is untouched.
+    ///
+    /// This is the only place a file is removed outright, and it refuses any path that is not inside a recognised
+    /// Trash. It runs only when the user chooses to delete items from the Undo screen.
     func purge(_ ids: Set<UUID>) -> (freed: Int64, failures: [TrashFailure]) {
         var freed: Int64 = 0
         var failures: [TrashFailure] = []
@@ -366,6 +411,9 @@ final class ActionLog: @unchecked Sendable {
         return (freed, failures)
     }
 
+    // MARK: - Persistence
+
+    /// Reads the history file; a missing or unreadable file simply starts an empty history.
     private func load() {
         guard let data = try? Data(contentsOf: fileURL) else { return }
         let decoder = JSONDecoder()
@@ -373,6 +421,7 @@ final class ActionLog: @unchecked Sendable {
         store = (try? decoder.decode([HistoryEntry].self, from: data)) ?? []
     }
 
+    /// Writes the history atomically so a crash mid-write cannot corrupt it.
     private func save() {
         lock.lock()
         let snapshot = store

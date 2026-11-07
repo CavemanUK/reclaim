@@ -1,24 +1,40 @@
 import Foundation
 
+// Read-only queries about the disk that Foundation does not provide directly: APFS container sizes
+// (via `diskutil`), Time Machine local snapshots (via `tmutil`), and whether Full Disk Access is granted.
+// The results feed the Overview screen's explanation of where the space has gone.
+
+/// One volume inside an APFS container, as listed by `diskutil apfs list`.
 struct APFSVolume: Identifiable, Equatable, Sendable {
     var id: String { device }
+    /// BSD device identifier, e.g. `disk3s1`.
     let device: String
     let name: String
+    /// APFS roles such as "System", "Data", "Preboot", "VM".
     let roles: [String]
+    /// Bytes the volume is using (`CapacityInUse`).
     let inUse: Int64
 
+    /// The first role, used as a short label.
     var role: String { roles.first ?? "Volume" }
 }
 
+/// The APFS container holding the Data volume. All its volumes share the container's free space, which is
+/// why the free figure belongs here and not to a single volume.
 struct APFSContainerInfo: Equatable, Sendable {
+    /// Total capacity available to the container's volumes (`CapacityCeiling`).
     let ceiling: Int64
+    /// Unallocated space in the container (`CapacityFree`).
     let free: Int64
     let volumes: [APFSVolume]
 
+    /// The volume holding the user's files and installed apps.
     var dataVolume: APFSVolume? { volumes.first { $0.roles.contains("Data") } }
+    /// The sealed, read-only macOS volume.
     var systemVolume: APFSVolume? { volumes.first { $0.roles.contains("System") } }
 }
 
+/// A Time Machine local snapshot, which can keep deleted files' space occupied until it is removed.
 struct LocalSnapshot: Identifiable, Equatable, Sendable {
     var id: String { name }
     let name: String
@@ -29,6 +45,8 @@ struct LocalSnapshot: Identifiable, Equatable, Sendable {
 
 /// Read-only questions we ask macOS about the disk. Nothing here changes anything.
 enum SystemInfo {
+    /// Runs a tool and returns its standard output, or nil if it could not be launched. The process is
+    /// terminated after `timeout` seconds so a hung tool cannot block the caller forever.
     static func run(_ launchPath: String, _ args: [String], timeout: TimeInterval = 20) -> Data? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: launchPath)
@@ -66,6 +84,8 @@ enum SystemInfo {
         return nil
     }
 
+    /// Lists local snapshots from `tmutil listlocalsnapshots /`. Snapshot names end in the date stamp,
+    /// which is split off so it can be passed back to `tmutil` and parsed as a `Date`.
     static func localSnapshots() -> [LocalSnapshot] {
         guard let data = run("/usr/bin/tmutil", ["listlocalsnapshots", "/"]),
             let text = String(data: data, encoding: .utf8)

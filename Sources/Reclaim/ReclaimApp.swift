@@ -1,13 +1,21 @@
+// App entry point: the window, the sidebar and detail switch, the shared sheets and toast, and the developer
+// diagnostics (`CLIScan`). All state lives in `AppModel`; this file only wires screens to it.
+// Diagnostics run only when `RECLAIM_DEV=1` is set, so a normal launch can never trigger them.
+
 import AppKit
 import SwiftUI
 
+/// The application. Owns the one `AppModel` and shows `ContentView` in a single window.
 @main
 struct ReclaimApp: App {
+    /// Created once and shared with every screen through the SwiftUI environment.
     @State private var model = AppModel()
 
     init() {
         // Developer diagnostics (`Reclaim --scan /path`, `--dups`, `--photos`, …) run and exit without a window.
         // They are reachable only with RECLAIM_DEV=1 in the environment, so a normal launch can never trigger them.
+        // This runs in `init`, which executes before the scene (and so any window) is created. Each `CLIScan` function
+        // ends with `exit`, so a diagnostic run finishes without a window ever appearing.
         let args = CommandLine.arguments
         guard ProcessInfo.processInfo.environment["RECLAIM_DEV"] == "1" else { return }
         if let i = args.firstIndex(of: "--scan"), i + 1 < args.count {
@@ -21,6 +29,7 @@ struct ReclaimApp: App {
             CLIScan.probe(dir: args[i + 1], out: args[o + 1])
         }
         if args.contains("--apps") { CLIScan.apps() }
+        if args.contains("--trend-check") { CLIScan.trendCheck() }
         if let i = args.firstIndex(of: "--trash-file"), let o = args.firstIndex(of: "--out"), i + 1 < args.count, o + 1 < args.count {
             CLIScan.trashFile(path: args[i + 1], out: args[o + 1], restore: args.contains("--restore"))
         }
@@ -40,6 +49,7 @@ struct ReclaimApp: App {
         }
     }
 
+    /// A single resizable window; the minimum size keeps the sidebar and detail screen usable.
     var body: some Scene {
         WindowGroup {
             ContentView()
@@ -50,16 +60,20 @@ struct ReclaimApp: App {
     }
 }
 
+/// The root view: the sidebar, the screen for the selected item, and the sheets and toast that any screen can trigger
+/// by setting `trashRequest`, `brewRequest` or `toast` on the model.
 struct ContentView: View {
     @Environment(AppModel.self) private var model
+    /// Whether the first-run welcome sheet has been dismissed (stored in UserDefaults).
     @AppStorage("hasSeenWelcome") private var hasSeenWelcome = false
 
     var body: some View {
+        // Gives `$model.selection` and the sheet bindings a writable path into the environment's model.
         @Bindable var model = model
         NavigationSplitView {
             List(selection: $model.selection) {
                 Section("Your Mac") {
-                    ForEach([SidebarItem.overview, .map, .suggestions]) { sidebarRow($0) }
+                    ForEach([SidebarItem.overview, .map, .overTime, .suggestions]) { sidebarRow($0) }
                 }
                 Section("Find") {
                     ForEach([SidebarItem.duplicates, .photos, .clearouts]) { sidebarRow($0) }
@@ -83,6 +97,7 @@ struct ContentView: View {
             switch model.selection ?? .overview {
             case .overview: OverviewView()
             case .map: SpaceMapView()
+            case .overTime: OverTimeView()
             case .suggestions: SuggestionsView()
             case .duplicates: DuplicatesView()
             case .photos: SimilarPhotosView()
@@ -106,6 +121,7 @@ struct ContentView: View {
                 ToastView(toast: toast)
                     .padding(.bottom, 22)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
+                    // Keyed on the toast's id so a newer message restarts the timer; problems stay up longer so they can be read.
                     .task(id: toast.id) {
                         try? await Task.sleep(for: .seconds(toast.isProblem ? 40 : 14))
                         if model.toast?.id == toast.id { model.toast = nil }
@@ -116,7 +132,9 @@ struct ContentView: View {
     }
 }
 
+/// The first-run sheet that states the safety promises before anything is scanned.
 struct WelcomeSheet: View {
+    /// Called when the user presses Get started.
     let done: () -> Void
 
     var body: some View {
@@ -142,6 +160,7 @@ struct WelcomeSheet: View {
         .frame(width: 520)
     }
 
+    /// One icon-and-text line of the welcome sheet.
     private func point(_ icon: String, _ title: String, _ text: String) -> some View {
         HStack(alignment: .top, spacing: 14) {
             Image(systemName: icon).font(.title3).foregroundStyle(.blue).frame(width: 28)
@@ -154,6 +173,7 @@ struct WelcomeSheet: View {
 }
 
 extension ContentView {
+    /// A sidebar row for an item. The `.tag` is what makes the list's selection binding work.
     fileprivate func sidebarRow(_ item: SidebarItem) -> some View {
         Label {
             Text(item.title)
@@ -166,6 +186,9 @@ extension ContentView {
 
 }
 
+/// The result message shown over the bottom of the window.
+///
+/// Depending on the toast it offers Undo, a link to the privacy settings, or a button to open Photos.
 struct ToastView: View {
     let toast: AppModel.Toast
     @Environment(AppModel.self) private var model
@@ -194,11 +217,16 @@ struct ToastView: View {
     }
 }
 
+/// The approval sheet every change goes through. It lists exactly what will be affected and the size, lists refused
+/// items separately, and words its explanation and button for the request's `kind` (Trash, Photos, or iCloud only).
+/// The confirm button calls `AppModel.confirmTrash(_:)`; nothing has changed before that.
 struct TrashConfirmSheet: View {
     let request: TrashRequest
     @Environment(AppModel.self) private var model
 
+    /// Library photos: the wording says Photos will ask again and that recovery happens inside Photos.
     private var isPhotos: Bool { request.kind == .photosLibrary }
+    /// Keep in iCloud only: the wording says nothing is deleted and the files stay in iCloud.
     private var isEvict: Bool { request.kind == .cloudEvict }
 
     var body: some View {
@@ -272,6 +300,12 @@ struct TrashConfirmSheet: View {
     }
 }
 
+/// Headless developer checks, reachable only with `RECLAIM_DEV=1` (see `ReclaimApp.init`). Each function prints or
+/// writes a report and exits.
+///
+/// Several are meant to be run as the installed app (`open -n -W --env RECLAIM_DEV=1 ... --args ...`) because macOS
+/// privacy permissions belong to the app, not to the shell. Functions that write files only touch temporary or
+/// throwaway paths, except `trashFile`, which moves the one file it is given.
 enum CLIScan {
     /// Runs inside the real app process (launch with `open`) so macOS privacy rules apply exactly as they do to users.
     static func probe(dir: String, out: String) {
@@ -325,6 +359,51 @@ enum CLIScan {
         exit(0)
     }
 
+    /// Runs a real whole-disk scan through the Over time pipeline using a temporary history file: report → record →
+    /// save → reload → compare → report fact. Prints what each step produced.
+    static func trendCheck() {
+        let done = DispatchSemaphore(value: 0)
+        nonisolated(unsafe) var lines: [String] = []
+        Task.detached {
+            let home = NSHomeDirectory()
+            let scanner = DiskScanner(options: .wholeDisk)
+            let root = await scanner.scan(root: URL(fileURLWithPath: "/"))
+            let cats = SpaceClassifier.breakdown(root: root, home: home)
+            let volume = VolumeInfo.current()
+            let container = SystemInfo.apfsContainer() ?? APFSContainerInfo(ceiling: volume.total, free: volume.available, volumes: [])
+            let report = SpaceReport(
+                container: container, snapshots: SystemInfo.localSnapshots(), categories: cats, scannedBytes: root.size,
+                unreadable: scanner.unreadablePaths, purgeable: volume.purgeable, scannedWholeDisk: true)
+            let record = ScanRecord(report: report)
+            let sum = record.categories.values.reduce(0, +)
+            lines.append("record: used \(ByteFormat.string(record.used)) free \(ByteFormat.string(record.free)) hidden \(ByteFormat.string(record.hidden)) categories \(record.categories.count) folders \(record.folders.count)")
+            lines.append("categories sum == scannedBytes: \(sum == record.scannedBytes)")
+            let file = URL(fileURLWithPath: NSTemporaryDirectory() + "trendcheck-\(UUID().uuidString)/trend.json")
+            let store = ScanHistoryStore(fileURL: file)
+            store.record(record)
+            store.recordDrive(total: record.total, free: record.free)
+            let reopened = ScanHistoryStore(fileURL: file)
+            lines.append("reloaded: \(reopened.scans.count) scan, \(reopened.drive.count) drive point, file \((try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? Int) ?? 0) bytes")
+            // A pretend later scan: 3 GB more used, one category 3 GB bigger.
+            var bigger = record.categories
+            if let first = bigger.keys.sorted().first { bigger[first, default: 0] += 3 << 30 }
+            let later = ScanRecord(
+                id: UUID(), date: record.date.addingTimeInterval(3 * 86_400), total: record.total, free: record.free - (3 << 30),
+                dataUsed: record.dataUsed + (3 << 30), scannedBytes: record.scannedBytes + (3 << 30), purgeable: record.purgeable,
+                hidden: record.hidden, snapshotCount: 0, categories: bigger, folders: record.folders)
+            let c = ScanComparison(older: record, newer: later)
+            lines.append("comparison: used +\(ByteFormat.string(c.usedChange)) over \(Int(c.days.rounded())) days; biggest growth \(c.biggestGrowth?.name ?? "none") +\(ByteFormat.string(c.biggestGrowth?.change ?? 0))")
+            let facts = ReportFacts.build(volume: volume, report: report, insights: [], apps: [], duplicateBytes: 0, similarBytes: 0,
+                                          clearoutCount: 0, home: home, trend: c, freedByReclaim: 2 << 30)
+            lines.append("report fact: " + (facts.lines.first { $0.hasPrefix("Compared with") } ?? "MISSING"))
+            try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
+            done.signal()
+        }
+        done.wait()
+        Swift.print(lines.joined(separator: "\n"))
+        exit(0)
+    }
+
     /// Scans the whole disk, then writes the report (on-device model if available) to a file. Run as the app.
     static func report(out: String) {
         let done = DispatchSemaphore(value: 0)
@@ -360,7 +439,7 @@ enum CLIScan {
         let dir = NSTemporaryDirectory() + "reclaim-trashfile-\(UUID().uuidString)"
         let log = ActionLog(fileURL: URL(fileURLWithPath: dir + "/history.json"))
         let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int64) ?? 0
-        let result = log.trash([(path, size ?? 0)], reason: "dev trash-file")
+        let result = log.trash([(path, size)], reason: "dev trash-file")
         lines.append("trashed: \(result.done.count)")
         for f in result.failed { lines.append("failed: \(f.message) permission=\(f.isPermission)") }
         if let e = result.done.first {
@@ -484,6 +563,7 @@ enum CLIScan {
         exit(0)
     }
 
+    /// Runs the similar-photo search over a folder and prints each set with the scores behind the suggestion.
     static func photos(path: String, strict: String) {
         let done = DispatchSemaphore(value: 0)
         Task.detached {
@@ -505,6 +585,7 @@ enum CLIScan {
         exit(0)
     }
 
+    /// Runs the duplicate search over a folder (minimum size 1 byte) and prints each group.
     static func dups(path: String) {
         let done = DispatchSemaphore(value: 0)
         Task.detached {
@@ -520,8 +601,11 @@ enum CLIScan {
         exit(0)
     }
 
+    /// The `--scan` check: scans a path and prints totals, the deepest big folders, category sums and APFS facts, so the
+    /// figures can be compared with `du` and Finder. `path == "/"` uses the whole-disk scan options.
     static func run(path: String, out: String? = nil) {
         let done = DispatchSemaphore(value: 0)
+        // Mutated only by the detached task while this thread waits on the semaphore, so there is no concurrent access.
         nonisolated(unsafe) var lines: [String] = []
         func print(_ s: String) { lines.append(s) }
         Task.detached {

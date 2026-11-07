@@ -1,5 +1,10 @@
 import SwiftUI
 
+// The "Clean up" screen, which lists the `Insight` cards from `InsightEngine`, and the "Undo" screen
+// (`HistoryView`) that shows what Reclaim has moved and lets the user put it back. Actions are only requested
+// here; `AppModel` confirms them with the user and `ActionLog` carries them out.
+
+/// The Clean up screen: cards grouped by risk, safest first.
 struct SuggestionsView: View {
     @Environment(AppModel.self) private var model
 
@@ -39,11 +44,13 @@ struct SuggestionsView: View {
     }
 }
 
+/// One suggestion: its summary, an optional command or advice, and an expandable list of items to select.
 struct InsightCard: View {
     let insight: Insight
     @Environment(AppModel.self) private var model
     @State private var expanded = false
 
+    /// The items on this card that the user has ticked.
     private var selectedItems: [InsightItem] {
         insight.items.filter { model.insightSelection.contains($0.path) }
     }
@@ -66,6 +73,7 @@ struct InsightCard: View {
             Text(insight.summary).font(.callout).foregroundStyle(.secondary)
             if let advice = insight.advice { Label(advice, systemImage: "hand.point.right").font(.callout) }
             if let command = insight.command {
+                // Only an allow-listed Homebrew command gets a Run button; anything else is shown for the user to copy.
                 let brew = BrewCommand.parse(command, title: insight.title, explanation: insight.summary)
                 Text(brew != nil
                     ? "Reclaim can run this Homebrew command for you. You'll see it and confirm first:"
@@ -78,6 +86,7 @@ struct InsightCard: View {
                 VStack(spacing: 4) {
                     ForEach(insight.items) { item in
                         HStack {
+                            // Items that are not trashable (for example a whole folder shown for information) get a lock instead of a checkbox.
                             if item.trashable || item.evictable {
                                 Toggle("", isOn: Binding(
                                     get: { model.insightSelection.contains(item.path) },
@@ -131,10 +140,12 @@ struct InsightCard: View {
     }
 }
 
+/// The Undo screen: everything Reclaim has moved or evicted, with a way to reverse each action.
 struct HistoryView: View {
     @Environment(AppModel.self) private var model
     @State private var confirmPurge = false
 
+    /// Items still sitting in the Trash. Their space is not free until they are deleted for good.
     private var pending: [HistoryEntry] { model.history.filter { $0.status == .trashed } }
 
     var body: some View {
@@ -151,6 +162,7 @@ struct HistoryView: View {
                             .font(.callout).foregroundStyle(.secondary)
                     }
                     Spacer()
+                    // Permanent deletion is only offered for items Reclaim itself trashed, and asks for confirmation first (`confirmPurge`).
                     Button("Delete permanently…", role: .destructive) { confirmPurge = true }
                 }
                 .card()

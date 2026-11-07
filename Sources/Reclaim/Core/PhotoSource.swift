@@ -4,10 +4,18 @@ import CryptoKit
 import Foundation
 import Photos
 
+// Abstracts where photos come from, so the similar-photo search does not care whether it is reading folders on
+// disk (`FileSource`) or the Photos library (`LibrarySource`). Library photos have no file path to open; they
+// must go through PhotoKit, which has its own rules about permission, iCloud and deletion.
+
 /// One photo, wherever it lives. `key` is a file path, or "photos://<localIdentifier>" for a Photos library asset.
 struct PhotoItem: Hashable, Sendable {
+    /// Unique within a source: a file path, or the `photos://` key for a library asset. Also the selection key in the UI.
     let key: String
     let name: String
+    /// Size in bytes. 0 means "unknown": library photos are listed without sizes (finding one means reading the
+    /// original), so it is filled in later by `PhotoSource.details(for:)`, and only for photos that end up in a set.
+    /// Code that compares or totals sizes must therefore not treat 0 as a real, empty file.
     var size: Int64
     let width: Int
     let height: Int
@@ -15,12 +23,14 @@ struct PhotoItem: Hashable, Sendable {
     let modified: Date?
 
     static let assetPrefix = "photos://"
+    /// The Photos `localIdentifier` for library items, or nil for files.
     var assetID: String? { key.hasPrefix(Self.assetPrefix) ? String(key.dropFirst(Self.assetPrefix.count)) : nil }
     var isAsset: Bool { assetID != nil }
 }
 
 /// Where similar-photo search reads from. Everything is blocking and must be called off the main thread.
 protocol PhotoSource: AnyObject, Sendable {
+    /// Name shown in the UI for this source.
     var label: String { get }
     /// How many analysis images to request at once.
     var parallelism: Int { get }
@@ -37,6 +47,8 @@ protocol PhotoSource: AnyObject, Sendable {
 
 // MARK: - Files on disk
 
+/// Photos in ordinary folders. Reads files directly, skipping iCloud cloud-only files because opening
+/// them would start a download.
 final class FileSource: PhotoSource, @unchecked Sendable {
     let label = "Folders"
     let parallelism = ProcessInfo.processInfo.activeProcessorCount
@@ -88,18 +100,22 @@ final class FileSource: PhotoSource, @unchecked Sendable {
 /// keeps the photos in Recently Deleted for 30 days.
 final class LibrarySource: PhotoSource, @unchecked Sendable {
     let label = "Photos library"
+    // Fewer concurrent requests than folders: every image comes through PhotoKit's shared image manager.
     let parallelism = 4
     private(set) var skippedCloud = 0
     private var assets: [String: PHAsset] = [:]
     private let lock = NSLock()
     private var dataHashes: [String: (size: Int64, hash: String)] = [:]
 
+    /// Current read/write permission for the Photos library.
     static var authorization: PHAuthorizationStatus { PHPhotoLibrary.authorizationStatus(for: .readWrite) }
 
+    /// Asks the user for Photos access (the system shows its own prompt).
     static func requestAccess() async -> PHAuthorizationStatus {
         await PHPhotoLibrary.requestAuthorization(for: .readWrite)
     }
 
+    /// Looks up an asset by its local identifier.
     static func asset(_ id: String) -> PHAsset? {
         PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject
     }
@@ -128,12 +144,15 @@ final class LibrarySource: PhotoSource, @unchecked Sendable {
         return out
     }
 
+    /// Prefers the asset cached during listing, falling back to a fresh fetch.
     private func asset(for item: PhotoItem) -> PHAsset? {
         guard let id = item.assetID else { return nil }
         lock.lock(); let a = assets[id]; lock.unlock()
         return a ?? Self.asset(id)
     }
 
+    /// Synchronous requests that never touch the network, so a photo that is only in iCloud is reported as missing
+    /// instead of being downloaded.
     private static func localOnlyOptions() -> PHImageRequestOptions {
         let o = PHImageRequestOptions()
         o.isSynchronous = true
@@ -143,6 +162,7 @@ final class LibrarySource: PhotoSource, @unchecked Sendable {
         return o
     }
 
+    /// Renders a downscaled image from what is already on this Mac; photos that exist only in iCloud return nil.
     func image(for item: PhotoItem, maxPixel: Int) -> CGImage? {
         guard let asset = asset(for: item) else { return nil }
         var result: CGImage?
@@ -163,6 +183,9 @@ final class LibrarySource: PhotoSource, @unchecked Sendable {
     }
 
     /// Reads the original's bytes (local only) once, recording size and content hash.
+    ///
+    /// This one read serves both `details(for:)` (the real size) and `exactKey(for:cancel:)` (the content hash),
+    /// so the result is cached by asset identifier. Returns nil if the original is not on this Mac.
     private func originalData(for item: PhotoItem) -> (size: Int64, hash: String)? {
         guard let id = item.assetID else { return nil }
         lock.lock()
@@ -199,6 +222,7 @@ final class LibrarySource: PhotoSource, @unchecked Sendable {
         try await PHPhotoLibrary.shared().performChanges { PHAssetChangeRequest.deleteAssets(fetch) }
     }
 
+    /// Memory-bounded cache for display thumbnails, limited by count and by approximate bytes.
     nonisolated(unsafe) private static let thumbCache: NSCache<NSString, NSImage> = {
         let c = NSCache<NSString, NSImage>()
         c.countLimit = 600
@@ -232,6 +256,7 @@ final class LibrarySource: PhotoSource, @unchecked Sendable {
         return image
     }
 
+    /// Opens the Photos app, for example so the user can review Recently Deleted.
     static func openPhotosApp() {
         if let url = URL(string: "photos://") { NSWorkspace.shared.open(url) }
     }

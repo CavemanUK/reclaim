@@ -1,10 +1,16 @@
 import SwiftUI
 
+// The "Similar photos" screen: pick folders or the Photos library, choose how strict the match should be, run
+// `SimilarPhotoFinder`, then review each set. Files go to the Trash and library photos go to Photos'
+// Recently Deleted, always through `AppModel.requestPhotoRemoval` after the user confirms.
+
+/// One colour per pipeline stage, shared by the stage chips and the progress card.
 private let stageColors: [Color] = [.pink, .purple, .blue, .green]
 
 struct SimilarPhotosView: View {
     @Environment(AppModel.self) private var model
 
+    /// Total known size of the photos marked for removal. Library photos with unknown size contribute 0.
     private var selectedBytes: Int64 {
         model.photoGroups.reduce(Int64(0)) { sum, g in
             sum + g.photos.filter { model.photoSelection.contains($0.path) }.reduce(Int64(0)) { $0 + $1.size }
@@ -36,6 +42,7 @@ struct SimilarPhotosView: View {
 
     // MARK: Setup
 
+    /// Source picker (folders or Photos library), strictness and the search button.
     private var setup: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
@@ -95,6 +102,7 @@ struct SimilarPhotosView: View {
     }
 
     @ViewBuilder
+    /// Explains the current Photos permission and what the user can do about it.
     private var libraryAccess: some View {
         switch model.photoAuth {
         case .authorized:
@@ -126,6 +134,7 @@ struct SimilarPhotosView: View {
     // MARK: Results
 
     @ViewBuilder
+    /// Summary figures, bulk actions and one card per set.
     private var results: some View {
         if model.photoGroups.isEmpty {
             ContentUnavailableView("No similar photos found", systemImage: "checkmark.seal",
@@ -151,6 +160,8 @@ struct SimilarPhotosView: View {
         }
     }
 
+    /// The button wording reflects where the chosen photos live, since library photos are deleted through Photos
+    /// rather than moved to the Trash.
     private var actionBar: some View {
         HStack {
             VStack(alignment: .leading) {
@@ -173,6 +184,7 @@ struct SimilarPhotosView: View {
 
 // MARK: - Explaining the search
 
+/// Explains each of the four pipeline stages as it runs (matching `PhotoProgress.stage`).
 private struct PhotoWorkingCard: View {
     let progress: PhotoProgress
 
@@ -248,6 +260,7 @@ private struct PhotoWorkingCard: View {
 
 // MARK: - A set of similar photos
 
+/// One set of similar photos with the reasons the top one was suggested.
 private struct PhotoGroupCard: View {
     let group: SimilarGroup
     @Environment(AppModel.self) private var model
@@ -261,7 +274,8 @@ private struct PhotoGroupCard: View {
                         HStack(spacing: 6) {
                             Text("Why this one:").font(.caption).foregroundStyle(.secondary)
                             ForEach(group.reasons, id: \.self) { r in
-                                let tie = r == "Practically identical quality"
+                                // This string must match the reason produced by `SimilarPhotoFinder.rank`.
+                                let tie = r == SimilarPhotoFinder.tieReason
                                 Text(r).font(.caption.weight(.semibold))
                                     .padding(.horizontal, 8).padding(.vertical, 2)
                                     .background((tie ? Color.secondary : Color.green).opacity(0.18), in: Capsule())
@@ -306,6 +320,7 @@ private struct PhotoGroupCard: View {
         }
     }
 
+    /// One photo in a set, with its keep/remove switch and quality bar.
     private func tile(_ photo: PhotoInfo) -> some View {
         let keep = photo.path == group.suggestedKeep
         let chosen = model.photoSelection.contains(photo.path)
@@ -351,6 +366,7 @@ private struct PhotoGroupCard: View {
 
 // MARK: - Side-by-side comparison
 
+/// Larger side-by-side view of a whole set, showing each score that went into the ranking.
 private struct PhotoCompareSheet: View {
     let group: SimilarGroup
     @Environment(AppModel.self) private var model
@@ -395,6 +411,7 @@ private struct PhotoCompareSheet: View {
         let keep = photo.path == group.suggestedKeep
         let chosen = model.photoSelection.contains(photo.path)
         let allowed = model.canTrash(photo.path)
+        // Each bar is shown relative to the best value in the set, matching how `SimilarPhotoFinder.rank` normalises.
         let maxPixels = Double(max(1, group.photos.map(\.pixels).max() ?? 1))
         let maxSize = Double(max(1, group.photos.map(\.size).max() ?? 1))
         let maxSharp = max(1e-6, group.photos.compactMap { $0.scores?.sharpness }.max() ?? 1)
@@ -417,7 +434,8 @@ private struct PhotoCompareSheet: View {
                 if let f = photo.scores?.face {
                     bar("Faces", f, .pink, "\(photo.scores?.faceCount ?? 0) found")
                 }
-                bar("Detail kept", Double(photo.size) / maxSize, .teal, ByteFormat.string(photo.size))
+                // Library photos whose original is in iCloud have no known size; showing "0 bytes" would mislead.
+                if photo.size > 0 { bar("Detail kept", Double(photo.size) / maxSize, .teal, ByteFormat.string(photo.size)) }
             }
 
             if !photo.exactCopies.isEmpty {

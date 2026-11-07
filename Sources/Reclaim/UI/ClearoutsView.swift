@@ -1,8 +1,13 @@
 import SwiftUI
 
+// The "Photo clear-outs" screen. It lists Photos-library pictures that are often temporary (screenshots, burst
+// extras, text-heavy photos), grouped by kind, and lets the user pick some. Removal is requested through
+// `AppModel`, which asks Photos to delete them; Photos shows its own confirmation and keeps them in Recently Deleted.
+
 struct ClearoutsView: View {
     @Environment(AppModel.self) private var model
 
+    /// The clear-out photos currently ticked by the user.
     private var selected: [ClearoutPhoto] { model.clearouts.filter { model.clearoutSelection.contains($0.photo.path) } }
 
     var body: some View {
@@ -44,6 +49,7 @@ struct ClearoutsView: View {
                      icon: "camera.viewfinder", colors: [.teal, .blue])
     }
 
+    /// Search controls, or the Photos permission prompt when access has not been granted.
     private var setup: some View {
         VStack(alignment: .leading, spacing: 12) {
             if model.canSearchLibrary {
@@ -78,6 +84,7 @@ struct ClearoutsView: View {
         .card()
     }
 
+    /// Progress card for the two stages of `PhotoClearoutFinder` (listing, then reading pictures).
     private var working: some View {
         let p = model.clearoutProgress
         return VStack(alignment: .leading, spacing: 10) {
@@ -110,6 +117,7 @@ struct ClearoutsView: View {
                     in: RoundedRectangle(cornerRadius: 18))
     }
 
+    /// Shown only when something is selected.
     private var actionBar: some View {
         HStack {
             VStack(alignment: .leading) {
@@ -128,6 +136,7 @@ struct ClearoutsView: View {
     }
 }
 
+/// One category (for example "Screenshots") with bulk-select shortcuts and a grid of its photos.
 private struct KindCard: View {
     let kind: ClearoutKind
     let items: [ClearoutPhoto]
@@ -170,6 +179,8 @@ private struct KindCard: View {
         }
     }
 
+    /// One photo. Tapping toggles it, but only if `canTrash` says the item is allowed (for library photos, that
+    /// Photos access has been granted).
     private func tile(_ item: ClearoutPhoto) -> some View {
         let chosen = model.clearoutSelection.contains(item.photo.path)
         let allowed = model.canTrash(item.photo.path)

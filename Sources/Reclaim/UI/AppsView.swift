@@ -1,15 +1,22 @@
 import SwiftUI
 
+// The "Uninstall apps" screen. A searchable list of installed apps on the left; on the right, the chosen app
+// with everything it left in the Library, each item toggled between keep and remove. Nothing is deleted here:
+// the action bar hands the selection to `AppModel`, which asks for confirmation and trashes via `ActionLog`.
+
+/// Master-detail screen for choosing an app to uninstall. Loads the app list on first appearance.
 struct AppsView: View {
     @Environment(AppModel.self) private var model
     @State private var search = ""
     @State private var sort: Sort = .size
 
+    /// Orderings offered above the list.
     enum Sort: String, CaseIterable, Identifiable {
         case size = "Biggest", unused = "Least used", name = "Name"
         var id: String { rawValue }
     }
 
+    /// The apps after applying the search text and the chosen sort order.
     private var shown: [InstalledApp] {
         var list = model.apps
         if !search.isEmpty { list = list.filter { $0.name.localizedCaseInsensitiveContains(search) } }
@@ -38,6 +45,7 @@ struct AppsView: View {
 
     // MARK: List
 
+    /// The left-hand column: counts, refresh, search, sort picker and the list itself.
     private var list: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
@@ -79,6 +87,7 @@ struct AppsView: View {
     // MARK: Detail
 
     @ViewBuilder
+    /// The right-hand column: the selected app, or a prompt to pick one.
     private var detail: some View {
         if let app = model.selectedApp {
             AppDetail(app: app)
@@ -90,11 +99,13 @@ struct AppsView: View {
     }
 }
 
+/// Everything about one app: header, warnings, what will be removed, and the uninstall action bar.
 private struct AppDetail: View {
     let app: InstalledApp
     @Environment(AppModel.self) private var model
 
     private var running: Bool { model.isRunning(app) }
+    /// Leftovers Reclaim may trash. Items needing an administrator are shown separately because it cannot move them.
     private var removable: [Leftover] { model.leftovers.filter { !$0.needsAdmin } }
     private var adminOnly: [Leftover] { model.leftovers.filter(\.needsAdmin) }
 
@@ -145,6 +156,8 @@ private struct AppDetail: View {
             .font(.callout).foregroundStyle(.orange).card()
     }
 
+    /// Offered when Homebrew installed the app: uninstalling through `brew` also clears Homebrew's own record.
+    /// The command is built here, not parsed from text, and still needs the user's confirmation.
     private func brewNote(_ token: String) -> some View {
         let command = BrewCommand(
             arguments: ["uninstall", "--cask", token], title: "Uninstall \(app.name) with Homebrew",
@@ -162,6 +175,7 @@ private struct AppDetail: View {
         .card()
     }
 
+    /// The app bundle and its removable leftovers, each with a keep/remove switch.
     private var leftoverSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
@@ -184,6 +198,7 @@ private struct AppDetail: View {
         .card()
     }
 
+    /// One line of the uninstall list. `warn` flags items likely to hold the user's own data.
     private func row(path: String, name: String, kind: LeftoverKind?, size: Int64, note: String, warn: Bool) -> some View {
         let on = model.uninstallSelection.contains(path)
         return HStack(alignment: .top, spacing: 12) {
@@ -212,6 +227,7 @@ private struct AppDetail: View {
         .padding(.vertical, 4)
     }
 
+    /// Leftovers in system-wide folders: listed so the user knows they exist, with no way to select them here.
     private var adminSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Label("Needs an administrator", systemImage: "lock.shield").font(.headline)
@@ -229,6 +245,8 @@ private struct AppDetail: View {
         .card()
     }
 
+    /// Shows the running total and the button that starts the confirmation step. Disabled while the app is
+    /// running, since uninstalling an open app can leave it half-removed.
     private var actionBar: some View {
         HStack {
             VStack(alignment: .leading) {

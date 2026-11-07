@@ -2,26 +2,36 @@ import AppKit
 import CoreServices
 import Foundation
 
+// Everything about installed apps for the uninstaller: listing them (`AppInventory`), working out which files in
+// ~/Library and /Library belong to one (`LeftoverMatch`, `AppLeftoverFinder`), and the Finder fallback for
+// removing an app bundle that needs an administrator. Trashing itself goes through `ActionLog` and `SafetyPolicy`.
+
+/// An app found in /Applications or ~/Applications, with the details the Apps list displays.
 struct InstalledApp: Identifiable, Hashable, Sendable {
     var id: String { path }
     let path: String
     let name: String
+    /// `CFBundleIdentifier`, e.g. `com.google.Chrome`. The primary key for matching leftovers.
     let bundleID: String?
     let version: String?
     let size: Int64
+    /// Spotlight's last-opened date, when available.
     let lastUsed: Date?
     let installed: Date?
+    /// True when the bundle carries a Mac App Store receipt.
     let fromAppStore: Bool
     let isApple: Bool
     /// Homebrew cask token when the app was installed by Homebrew.
     let caskToken: String?
 
+    /// A readable vendor name guessed from the second part of the bundle identifier ("Google" from `com.google.Chrome`).
     var displayVendor: String {
         guard let id = bundleID?.split(separator: ".") , id.count >= 2 else { return "" }
         return id[1].capitalized
     }
 }
 
+/// The category of a leftover file, which determines how it is described in the uninstall flow.
 enum LeftoverKind: String, CaseIterable, Sendable {
     case cache = "Caches"
     case preferences = "Preferences"
@@ -34,6 +44,7 @@ enum LeftoverKind: String, CaseIterable, Sendable {
     case launchAgent = "Background agent"
     case system = "System-level files"
 
+    /// A plain-language description shown next to the leftover.
     var explanation: String {
         switch self {
         case .cache: "Temporary files the app can rebuild."
@@ -49,6 +60,7 @@ enum LeftoverKind: String, CaseIterable, Sendable {
         }
     }
 
+    /// SF Symbol name for the category.
     var icon: String {
         switch self {
         case .cache: "memorychip"
@@ -65,11 +77,13 @@ enum LeftoverKind: String, CaseIterable, Sendable {
     }
 }
 
+/// A file or folder that appears to belong to an app being uninstalled.
 struct Leftover: Identifiable, Hashable, Sendable {
     var id: String { path }
     let path: String
     let kind: LeftoverKind
     let size: Int64
+    /// True for system-wide locations that Reclaim can show but cannot remove without administrator rights.
     let needsAdmin: Bool
     /// macOS wouldn't let Reclaim look inside (Full Disk Access is off), so the size is a guess of zero.
     var sizeUnknown: Bool = false
@@ -89,6 +103,7 @@ struct UninstallScope: Sendable {
     var otherBundleIDs: Set<String> = []
 }
 
+// MARK: - Matching rules
 /// Shared matching rules: which folder/file names belong to a given app.
 enum LeftoverMatch {
     /// App names too generic to match on name alone (they would catch Apple's own data).
@@ -113,6 +128,11 @@ enum LeftoverMatch {
         return false
     }
 
+    /// Whether a single file or folder name belongs to the app.
+    ///
+    /// A match requires the name to equal the bundle identifier or to start or end with it at a dot boundary
+    /// (`com.x.app.plist`, `group.com.x.app`), or, for apps with a long enough, non-generic name, the app's name itself. Sibling
+    /// products are rejected first so they are never swept up.
     static func matches(name rawName: String, bundleID: String?, appName: String, others: Set<String> = []) -> Bool {
         let name = rawName.lowercased()
         if belongsToSibling(name, bundleID: bundleID, others: others) { return false }
@@ -146,6 +166,8 @@ enum LeftoverMatch {
     }
 
     /// Matches a one- or two-level relative path inside a Library spot ("com.x.y" or "Google/Chrome").
+    /// This is what `SafetyPolicy` calls to decide whether a leftover belongs to the app being uninstalled, and what
+    /// `AppLeftoverFinder` uses to find them, so the two always agree.
     static func matchesRelative(_ rel: String, bundleID: String?, appName: String, others: Set<String> = []) -> Bool {
         let parts = rel.split(separator: "/").map(String.init)
         func stem(_ n: String) -> String {
@@ -165,12 +187,16 @@ enum LeftoverMatch {
     }
 }
 
+// MARK: - Installed apps
+/// Lists installed apps and answers questions about them.
 enum AppInventory {
+    /// The only folders searched for apps, and the only ones `SafetyPolicy` lets an app be uninstalled from.
     static let appFolders = ["/Applications", NSHomeDirectory() + "/Applications"]
 
     /// Apps the user could uninstall. Blocking; call off the main thread.
     static func installedApps(cancel: CancelFlag) -> [InstalledApp] {
         let fm = FileManager.default
+        // Looked up once, outside the loop, because it reads the Caskroom directories.
         let casks = homebrewCasks()
         var apps: [InstalledApp] = []
         for folder in appFolders {
@@ -209,6 +235,7 @@ enum AppInventory {
         return (st.st_flags & 0x0008_0000) != 0   // SF_RESTRICTED
     }
 
+    /// Asks Spotlight when the app was last opened.
     private static func spotlight(_ path: String) -> (lastUsed: Date?, Void) {
         guard let item = MDItemCreate(kCFAllocatorDefault, path as CFString) else { return (nil, ()) }
         let used = MDItemCopyAttribute(item, kMDItemLastUsedDate) as? Date
@@ -254,6 +281,7 @@ enum AppInventory {
         return out
     }
 
+    /// Whether the app is currently running, matched by bundle identifier or by location.
     static func isRunning(_ app: InstalledApp) -> Bool {
         NSWorkspace.shared.runningApplications.contains { running in
             if let id = app.bundleID, running.bundleIdentifier == id { return true }
@@ -262,8 +290,11 @@ enum AppInventory {
     }
 }
 
+// MARK: - Leftover discovery
 /// Finds files an app left around the user's Library, plus system-level ones Reclaim can only point at.
 enum AppLeftoverFinder {
+    /// Folders in the user's Library where apps keep data, paired with how that data is described.
+    /// Kept in step with `SafetyPolicy.uninstallFolders`, which limits what may be trashed.
     private static let userSpots: [(rel: String, kind: LeftoverKind)] = [
         ("Library/Caches", .cache),
         ("Library/Application Support", .supportData),
@@ -280,11 +311,16 @@ enum AppLeftoverFinder {
         ("Library/Preferences/ByHost", .preferences),
     ]
 
+    /// System-wide folders that are searched so they can be listed, but are flagged `needsAdmin`.
     private static let systemSpots: [String] = [
         "/Library/Application Support", "/Library/LaunchAgents", "/Library/LaunchDaemons",
         "/Library/PrivilegedHelperTools", "/Library/Preferences", "/Library/Caches", "/Library/Logs",
     ]
 
+    /// Finds the leftovers of `app` in the user's and the system Library.
+    ///
+    /// `others` is the set of other installed apps' bundle identifiers, used to avoid claiming a sibling product's
+    /// files. Blocking; call off the main thread.
     static func find(for app: InstalledApp, others: Set<String> = [], home: String = NSHomeDirectory(), cancel: CancelFlag? = nil) -> [Leftover] {
         var out: [Leftover] = []
         let fm = FileManager.default
@@ -292,6 +328,7 @@ enum AppLeftoverFinder {
         func leftover(_ path: String, kind: LeftoverKind, admin: Bool) -> Leftover {
             var isDir: ObjCBool = false
             fm.fileExists(atPath: path, isDirectory: &isDir)
+            // A folder macOS won't let us list (no Full Disk Access) is reported with an unknown size rather than as empty.
             let unreadable = isDir.boolValue && (try? fm.contentsOfDirectory(atPath: path)) == nil
             return Leftover(
                 path: path, kind: kind, size: unreadable ? 0 : AppInventory.allocatedSize(of: path, cancel: cancel),
@@ -315,6 +352,7 @@ enum AppLeftoverFinder {
         for spot in userSpots { scan(home + "/" + spot.rel, kind: spot.kind, admin: false) }
         for dir in systemSpots { scan(dir, kind: .system, admin: true) }
         // De-duplicate nested matches (a container inside a matched folder, for instance).
+        // Shortest paths first, so a parent is kept before its children are tested against it.
         let sorted = out.sorted { $0.path.count < $1.path.count }
         var kept: [Leftover] = []
         for l in sorted where !kept.contains(where: { l.path.hasPrefix($0.path + "/") }) { kept.append(l) }
@@ -322,10 +360,14 @@ enum AppLeftoverFinder {
     }
 }
 
+// MARK: - Finder fallback
 /// Asks Finder to move an item to the Trash. Finder can elevate with the user's admin password when macOS
 /// requires it for an app in /Applications. Needs the user's one-time Automation permission.
 enum FinderTrash {
+    /// Returns the item's new location in the Trash, or an error message. Used only for an app bundle that a
+    /// plain trash call was refused for permission reasons.
     static func trash(_ path: String) -> (trashPath: String?, error: String?) {
+        // Escape backslashes and quotes so the path cannot break out of the AppleScript string literal.
         let escaped = path.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
         let source = """
             tell application "Finder"
