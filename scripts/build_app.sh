@@ -32,7 +32,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <dict>
     <key>CFBundleName</key><string>Reclaim</string>
     <key>CFBundleDisplayName</key><string>Reclaim</string>
-    <key>CFBundleIdentifier</key><string>com.craigarmitage.reclaim</string>
+    <key>CFBundleIdentifier</key><string>app.reclaim.mac</string>
     <key>CFBundleExecutable</key><string>Reclaim</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>

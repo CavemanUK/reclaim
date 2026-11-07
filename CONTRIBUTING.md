@@ -58,7 +58,7 @@ macOS needs Full Disk Access and Photos permission to be granted to the *install
 Open an issue with your macOS version, what you did, and what happened. For anything that **moved or removed something it shouldn't have**, say so in the title and include what you can from the Undo screen or the log:
 
 ```bash
-log show --last 1h --predicate 'subsystem == "com.craigarmitage.reclaim"'
+log show --last 1h --predicate 'subsystem == "app.reclaim.mac"'
 ```
 
 ## AI-assisted contributions

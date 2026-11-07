@@ -7,7 +7,7 @@ import os
 // and can restore items or empty the ones Reclaim itself trashed.
 
 /// Shared logger for everything that touches the file system, so actions can be audited in Console.app.
-let actionLogger = Logger(subsystem: "com.craigarmitage.reclaim", category: "actions")
+let actionLogger = Logger(subsystem: "app.reclaim.mac", category: "actions")
 
 // MARK: - History record
 /// One recorded action, persisted in `history.json` so the Undo screen survives restarts.
