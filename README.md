@@ -87,6 +87,10 @@ scripts/       build, install, test, icon generation, entitlements
 docs/          feature ideas and roadmap
 ```
 
+## How it was made
+
+Reclaim was written with AI assistance: the code was produced by Anthropic's Claude (through Claude Code), directed, run and tested by its maintainer on a real Mac. It has a test suite and deliberately conservative safety rules, but it is still a tool that moves files. Read the approval screens, keep backups, and treat it as you would any new software that touches your data.
+
 ## Contributing
 
 Issues and pull requests are welcome. Please keep to the two rules at the top: no removal without approval, and nothing unrecoverable.
