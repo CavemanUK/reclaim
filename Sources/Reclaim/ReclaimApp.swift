@@ -6,8 +6,10 @@ struct ReclaimApp: App {
     @State private var model = AppModel()
 
     init() {
-        // Developer check: `Reclaim --scan /path` prints scan totals and exits (no UI).
+        // Developer diagnostics (`Reclaim --scan /path`, `--dups`, `--photos`, …) run and exit without a window.
+        // They are reachable only with RECLAIM_DEV=1 in the environment, so a normal launch can never trigger them.
         let args = CommandLine.arguments
+        guard ProcessInfo.processInfo.environment["RECLAIM_DEV"] == "1" else { return }
         if let i = args.firstIndex(of: "--scan"), i + 1 < args.count {
             let out = args.firstIndex(of: "--out").flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil }
             CLIScan.run(path: args[i + 1], out: out)

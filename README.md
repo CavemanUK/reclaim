@@ -5,9 +5,9 @@ A free, open-source disk clean-up app for macOS that explains where your space w
 Reclaim is built on two rules:
 
 - **It only looks until you say otherwise.** Nothing is removed without your approval.
-- **Anything it removes is recoverable.** Files go to the Trash, photos go to Photos' Recently Deleted, and the Undo screen can put things back.
+- **Anything Reclaim removes is recoverable.** Files go to the Trash, photos go to Photos' Recently Deleted, local copies of iCloud files can be downloaded again, and the Undo screen can put things back. (The one exception is Homebrew, below.)
 
-Nothing leaves your Mac. Reclaim makes no network requests and has no third-party dependencies. The written report uses Apple's on-device language model, which never sees file contents, only names and sizes.
+Nothing leaves your Mac. Reclaim's own code makes no network requests and has no third-party dependencies. The written report uses Apple's on-device language model, which never sees file contents, only names and sizes.
 
 ## What it does
 
@@ -15,14 +15,14 @@ Nothing leaves your Mac. Reclaim makes no network requests and has no third-part
 |---|---|
 | **My Mac** | Whole-disk scan reconciled against APFS, so the totals match what macOS reports. Categories, purgeable space, Time Machine snapshots, and a written report. |
 | **What's big** | An interactive space map of everything on the drive, or of any folder or external drive you choose. |
-| **Clean up** | Plain-English suggestions with risk labels: caches, old downloads, developer leftovers, device backups, Homebrew packages nothing needs any more. |
-| **Duplicates** | Exact duplicate files, hashed, with the best copy to keep preselected. |
+| **Clean up** | Plain-English suggestions with risk labels: caches, old downloads, developer leftovers, device backups, Homebrew packages nothing needs any more, and "Keep in iCloud only" for files already safe in iCloud (frees the local copy without deleting anything). |
+| **Duplicates** | Exact duplicate files, hashed, with the best copy to keep suggested. Nothing is marked for removal until you choose. |
 | **Similar photos** | Near-identical photos in folders or in your Photos library, scored for sharpness and composition so the best shot is suggested. |
 | **Photo clear-outs** | Screenshots, photos of text (receipts, notes), and burst extras, found with Apple's on-device recognisers. |
 | **Uninstall apps** | Removes an app and its leftovers (caches, preferences, containers), with Homebrew awareness for cask-installed apps. |
 | **Undo** | A log of everything Reclaim moved, with one-click restore. |
 
-Homebrew commands (`cleanup`, `autoremove`, `uninstall --cask`) can be run from inside the app after confirmation. Anything that needs `sudo` is shown as text to copy into Terminal; Reclaim never runs it for you.
+Homebrew commands (`cleanup`, `autoremove`, `uninstall --cask`) can be run from inside the app after you confirm the exact command. They are Homebrew's own operations, so unlike everything else in Reclaim they cannot be undone from the Undo screen. Anything that needs `sudo` is shown as text to copy into Terminal; Reclaim never runs it for you.
 
 ## Requirements
 
@@ -34,7 +34,7 @@ Homebrew commands (`cleanup`, `autoremove`, `uninstall --cask`) can be run from 
 
 ```bash
 git clone https://github.com/CavemanUK/reclaim.git
-cd Reclaim
+cd reclaim
 ./scripts/install.sh
 ```
 
@@ -58,6 +58,14 @@ Then, in **System Settings › Privacy & Security**:
 ```
 
 The test script passes extra flags because Swift Testing lives in the Command Line Tools' extra Frameworks folder. If you have full Xcode, plain `swift test` also works.
+
+## Developer flags
+
+The release binary contains a few read-only diagnostics (scan, duplicate and photo checks used by the test workflow, plus two that create and remove a throwaway file). They are off unless `RECLAIM_DEV=1` is set in the environment, so launching the app normally can never reach them:
+
+```bash
+RECLAIM_DEV=1 ~/Applications/Reclaim.app/Contents/MacOS/Reclaim --scan ~/Pictures
+```
 
 ## How it stays safe
 
